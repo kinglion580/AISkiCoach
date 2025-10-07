@@ -1,0 +1,37 @@
+FROM node:20
+
+# 配置 Debian 国内源
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
+# 配置 npm 国内源
+RUN npm config set registry https://registry.npmmirror.com/
+WORKDIR /app
+
+RUN echo "=== Starting npm install ==="
+
+COPY package*.json /app/
+
+RUN npm install
+
+# 配置 Playwright 使用国内源并安装
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=0
+
+RUN echo "=== Starting playwright install ==="
+
+RUN npx -y playwright install --with-deps
+
+RUN echo "=== Playwright install completed ==="
+
+COPY ./ /app/
+
+ARG VITE_API_URL=${VITE_API_URL}
+
+RUN echo "=== Build completed, API URL: ${VITE_API_URL} ==="
+
+# 保持容器运行
+CMD ["sleep", "infinity"]
+
+# 添加启动命令 - 运行测试服务器
+# CMD ["npx", "playwright", "show-report"]
