@@ -31,25 +31,25 @@ class StartSessionData(BaseModel):
     start_time: datetime
 
 
-class ApiEnvelope(BaseModel):
-    request_id: Optional[str] = None
-    code: str
-    message: str
-    data: dict | StartSessionData | None = None
-
-
-class FinishSessionRequest(BaseModel):
-    request_id: Optional[str] = None
-    session_id: str
-    end_time: datetime
-
-
 class FinishSessionData(BaseModel):
     session_id: str
     duration_seconds: int
     max_edge_angle: Optional[float] = None
     edge_time_ratio: Optional[float] = None
     average_speed: Optional[float] = None
+
+
+class ApiEnvelope(BaseModel):
+    request_id: Optional[str] = None
+    code: str
+    message: str
+    data: dict | StartSessionData | FinishSessionData | None = None
+
+
+class FinishSessionRequest(BaseModel):
+    request_id: Optional[str] = None
+    session_id: str
+    end_time: datetime
 
 
 class StartSessionRequestModel:
