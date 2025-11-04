@@ -159,7 +159,13 @@ def get_user_devices(
     
     # 构建响应数据
     devices = []
+    valid_statuses = ['connected', 'disconnected', 'connecting', 'error']
     for device, is_primary, connected_at in results:
+        # 确保 connection_status 是有效值
+        connection_status = device.connection_status
+        if connection_status not in valid_statuses:
+            connection_status = 'disconnected'
+        
         device_item = DeviceListItem(
             id=str(device.id),
             device_id=device.device_id,
@@ -167,7 +173,7 @@ def get_user_devices(
             device_name=device.device_name,
             firmware_version=device.firmware_version,
             battery_level=device.battery_level,
-            connection_status=device.connection_status,
+            connection_status=connection_status,
             last_seen_at=device.last_seen_at,
             is_primary=is_primary,
             connected_at=connected_at,
@@ -258,6 +264,12 @@ def get_device_detail(
             created_at=last_calibration.created_at
         )
     
+    # 确保 connection_status 是有效值
+    valid_statuses = ['connected', 'disconnected', 'connecting', 'error']
+    connection_status = device.connection_status
+    if connection_status not in valid_statuses:
+        connection_status = 'disconnected'
+    
     return DeviceDetailResponse(
         device=DevicePublic(
             id=device.id,
@@ -266,7 +278,7 @@ def get_device_detail(
             device_name=device.device_name,
             firmware_version=device.firmware_version,
             battery_level=device.battery_level,
-            connection_status=device.connection_status,
+            connection_status=connection_status,
             last_seen_at=device.last_seen_at,
             created_at=device.created_at
         ),
@@ -332,6 +344,17 @@ def bind_device(
     session.commit()
     session.refresh(user_device)
     
+    # 确保 connection_status 是有效值
+    valid_statuses = ['connected', 'disconnected', 'connecting', 'error']
+    connection_status = device.connection_status
+    if connection_status not in valid_statuses:
+        connection_status = 'disconnected'
+        # 同时更新数据库中的值
+        device.connection_status = connection_status
+        session.add(device)
+        session.commit()
+        session.refresh(device)
+    
     return DeviceBindingResponse(
         device=DevicePublic(
             id=device.id,
@@ -340,7 +363,7 @@ def bind_device(
             device_name=device.device_name,
             firmware_version=device.firmware_version,
             battery_level=device.battery_level,
-            connection_status=device.connection_status,
+            connection_status=connection_status,
             last_seen_at=device.last_seen_at,
             created_at=device.created_at
         ),
@@ -429,6 +452,15 @@ def update_device_status(
     # 更新设备状态
     update_data = request.model_dump(exclude_unset=True)
     if update_data:
+        # 验证 connection_status 如果是更新字段之一
+        if 'connection_status' in update_data:
+            valid_statuses = ['connected', 'disconnected', 'connecting', 'error']
+            if update_data['connection_status'] not in valid_statuses:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"connection_status must be one of: {', '.join(valid_statuses)}"
+                )
+        
         device.sqlmodel_update(update_data)
         device.updated_at = datetime.utcnow()
         if device.connection_status == "connected":
@@ -438,6 +470,12 @@ def update_device_status(
         session.commit()
         session.refresh(device)
     
+    # 确保 connection_status 是有效值
+    valid_statuses = ['connected', 'disconnected', 'connecting', 'error']
+    connection_status = device.connection_status
+    if connection_status not in valid_statuses:
+        connection_status = 'disconnected'
+    
     return DevicePublic(
         id=device.id,
         device_id=device.device_id,
@@ -445,7 +483,7 @@ def update_device_status(
         device_name=device.device_name,
         firmware_version=device.firmware_version,
         battery_level=device.battery_level,
-        connection_status=device.connection_status,
+        connection_status=connection_status,
         last_seen_at=device.last_seen_at,
         created_at=device.created_at
     )

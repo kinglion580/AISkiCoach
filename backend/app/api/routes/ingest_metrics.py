@@ -81,85 +81,99 @@ class MetricsDataPointsResponse(BaseModel):
 @router.post("/sessions/{session_id}/metrics:batch")
 def ingest_metrics_batch(
     session_id: str = Path(..., description="Skiing session ID"),
-    payload: MetricsBatchRequest | Any = None,
+    *,
+    payload: MetricsBatchRequest,
     db: SessionDep = None,
     current_user: CurrentUser = None,
 ):
-    if payload is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid payload")
+    try:
+        device_id_str = payload.device_id
+        samples = payload.samples
+        request_id = payload.request_id
+        if not device_id_str or samples is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="device_id and samples are required")
+        if not isinstance(samples, list) or len(samples) == 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="samples must be a non-empty array")
+        if len(samples) > 5000:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="too many samples")
 
-    device_id_str = payload.device_id
-    samples = payload.samples
-    if not device_id_str or samples is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="device_id and samples are required")
-    if not isinstance(samples, list) or len(samples) == 0:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="samples must be a non-empty array")
-    if len(samples) > 5000:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="too many samples")
+        # 校验会话归属
+        ski_sess = db.get(SkiingSession, session_id)
+        if not ski_sess:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session_not_found")
+        if ski_sess.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
 
-    # 校验会话归属
-    ski_sess = db.get(SkiingSession, session_id)
-    if not ski_sess:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session_not_found")
-    if ski_sess.user_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+        # 校验设备绑定
+        device = db.exec(select(Device).where(Device.device_id == device_id_str)).first()
+        if not device:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="device_not_found")
+        binding = db.exec(
+            select(UserDevice).where((UserDevice.user_id == current_user.id) & (UserDevice.device_id == device.id))
+        ).first()
+        if not binding:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="device_not_belong_to_user")
 
-    # 校验设备绑定
-    device = db.exec(select(Device).where(Device.device_id == device_id_str)).first()
-    if not device:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="device_not_found")
-    binding = db.exec(
-        select(UserDevice).where((UserDevice.user_id == current_user.id) & (UserDevice.device_id == device.id))
-    ).first()
-    if not binding:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="device_not_belong_to_user")
+        rows: list[SkiingMetric] = []
+        for idx, s in enumerate(samples):
+            # 支持 Pydantic 模型和原始 dict
+            if isinstance(s, MetricsSample):
+                s_dict = s.model_dump(exclude_none=True)
+            elif isinstance(s, dict):
+                s_dict = s
+            else:
+                raise HTTPException(status_code=400, detail=f"invalid_sample at index {idx}")
+            ts = s_dict.get("timestamp")
+            if ts is None:
+                raise HTTPException(status_code=400, detail=f"invalid_sample at index {idx}: timestamp is required")
+            try:
+                ts_dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except Exception:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"invalid_sample at index {idx}: bad timestamp")
 
-    rows: list[SkiingMetric] = []
-    for idx, s in enumerate(samples):
-        if not isinstance(s, dict):
-            raise HTTPException(status_code=400, detail=f"invalid_sample at index {idx}")
-        ts = s.get("timestamp")
-        if ts is None:
-            raise HTTPException(status_code=400, detail=f"invalid_sample at index {idx}: timestamp is required")
-        try:
-            ts_dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-        except Exception:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"invalid_sample at index {idx}: bad timestamp")
+            row = SkiingMetric(
+                user_id=current_user.id,
+                device_id=device.id,
+                session_id=ski_sess.id,
+                timestamp=ts_dt,
+                edge_angle=s_dict.get("edge_angle"),
+                edge_angle_front=s_dict.get("edge_angle_front"),
+                edge_angle_back=s_dict.get("edge_angle_back"),
+                edge_angle_speed=s_dict.get("edge_angle_speed"),
+                edge_angle_speed_front=s_dict.get("edge_angle_speed_front"),
+                edge_angle_speed_back=s_dict.get("edge_angle_speed_back"),
+                edge_displacement=s_dict.get("edge_displacement"),
+                edge_displacement_front=s_dict.get("edge_displacement_front"),
+                edge_displacement_back=s_dict.get("edge_displacement_back"),
+                edge_time_ratio=s_dict.get("edge_time_ratio"),
+                edge_duration_seconds=s_dict.get("edge_duration_seconds"),
+                turn_detected=bool(s_dict.get("turn_detected", False)),
+                turn_direction=s_dict.get("turn_direction"),
+                turn_radius=s_dict.get("turn_radius"),
+                turn_duration_seconds=s_dict.get("turn_duration_seconds"),
+                speed_kmh=s_dict.get("speed_kmh"),
+                slope_angle=s_dict.get("slope_angle"),
+            )
+            rows.append(row)
 
-        row = SkiingMetric(
-            user_id=current_user.id,
-            device_id=device.id,
-            session_id=ski_sess.id,
-            timestamp=ts_dt,
-            edge_angle=s.get("edge_angle"),
-            edge_angle_front=s.get("edge_angle_front"),
-            edge_angle_back=s.get("edge_angle_back"),
-            edge_angle_speed=s.get("edge_angle_speed"),
-            edge_angle_speed_front=s.get("edge_angle_speed_front"),
-            edge_angle_speed_back=s.get("edge_angle_speed_back"),
-            edge_displacement=s.get("edge_displacement"),
-            edge_displacement_front=s.get("edge_displacement_front"),
-            edge_displacement_back=s.get("edge_displacement_back"),
-            edge_time_ratio=s.get("edge_time_ratio"),
-            edge_duration_seconds=s.get("edge_duration_seconds"),
-            turn_detected=bool(s.get("turn_detected", False)),
-            turn_direction=s.get("turn_direction"),
-            turn_radius=s.get("turn_radius"),
-            turn_duration_seconds=s.get("turn_duration_seconds"),
-            speed_kmh=s.get("speed_kmh"),
-            slope_angle=s.get("slope_angle"),
+        db.add_all(rows)
+        db.commit()
+
+        return {
+            "request_id": request_id,
+            "code": "ok",
+            "message": "metrics batch accepted",
+            "data": {"accepted": len(rows), "failed": 0},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
         )
-        rows.append(row)
-
-    db.add_all(rows)
-    db.commit()
-
-    return {
-        "request_id": payload.get("request_id"),
-        "code": "ok",
-        "message": "metrics batch accepted",
-        "data": {"accepted": len(rows), "failed": 0},
-    }
 
 
 # ======================
