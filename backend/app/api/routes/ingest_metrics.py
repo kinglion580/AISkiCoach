@@ -10,6 +10,7 @@ from sqlmodel import Session, select, func, and_
 
 from app.api.deps import CurrentUser, SessionDep
 from app.models import Device, SkiingMetric, SkiingSession, UserDevice
+from app.services.metrics_compute import compute_metrics_from_raw_data
 
 
 router = APIRouter(prefix="", tags=["ingest"])
@@ -265,5 +266,112 @@ def get_session_metrics(
         page_size=page_size,
         has_next=(page * page_size) < total
     )
+
+
+# ======================
+# Metrics 计算API
+# ======================
+
+class ComputeMetricsRequest(BaseModel):
+    """计算 metrics 请求模型"""
+    request_id: Optional[str] = None
+    start_time: Optional[datetime] = Field(default=None, description="开始时间（可选，用于指定计算的时间范围）")
+    end_time: Optional[datetime] = Field(default=None, description="结束时间（可选，用于指定计算的时间范围）")
+    overwrite_existing: bool = Field(default=False, description="是否覆盖已存在的 metrics 数据")
+
+
+class ComputeMetricsResponse(BaseModel):
+    """计算 metrics 响应模型"""
+    request_id: Optional[str] = None
+    code: str
+    message: str
+    data: dict
+
+
+@router.post("/sessions/{session_id}/metrics:compute", response_model=ComputeMetricsResponse)
+def compute_metrics(
+    session_id: str = Path(..., description="Skiing session ID"),
+    *,
+    payload: ComputeMetricsRequest,
+    db: SessionDep = None,
+    current_user: CurrentUser = None,
+):
+    """
+    从原始数据（IMU、GPS、气压计）计算 metrics 数据
+    
+    该接口会：
+    1. 从数据库获取指定会话的 IMU、GPS、气压计原始数据
+    2. 调用算法计算 metrics 数据
+    3. 保存计算结果到数据库
+    
+    - **session_id**: 会话ID
+    - **start_time**: 开始时间（可选，用于指定计算的时间范围）
+    - **end_time**: 结束时间（可选，用于指定计算的时间范围）
+    - **overwrite_existing**: 是否覆盖已存在的 metrics 数据
+    """
+    try:
+        # 校验会话归属
+        ski_sess = db.get(SkiingSession, session_id)
+        if not ski_sess:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session_not_found")
+        if ski_sess.user_id != current_user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+        
+        # 获取设备ID
+        if not ski_sess.device_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="session has no associated device"
+            )
+        device_id = str(ski_sess.device_id)
+        
+        # 如果指定了覆盖，先删除已存在的 metrics 数据
+        if payload.overwrite_existing:
+            existing_metrics = db.exec(
+                select(SkiingMetric).where(SkiingMetric.session_id == session_id)
+            ).all()
+            for metric in existing_metrics:
+                db.delete(metric)
+            db.commit()
+        
+        # 调用算法服务计算 metrics
+        metrics_list = compute_metrics_from_raw_data(
+            db=db,
+            session_id=session_id,
+            user_id=str(current_user.id),
+            device_id=device_id,
+            start_time=payload.start_time,
+            end_time=payload.end_time,
+        )
+        
+        # 保存计算结果
+        db.add_all(metrics_list)
+        db.commit()
+        
+        return ComputeMetricsResponse(
+            request_id=payload.request_id,
+            code="ok",
+            message="metrics computed successfully",
+            data={
+                "computed_count": len(metrics_list),
+                "session_id": session_id,
+                "start_time": payload.start_time.isoformat() if payload.start_time else None,
+                "end_time": payload.end_time.isoformat() if payload.end_time else None,
+            },
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
 
 

@@ -31,7 +31,7 @@ def init_timescale() -> None:
                 logger.info("✅ TimescaleDB扩展已存在")
             
             # 2. 检查表是否存在，如果存在则创建超表
-            tables_to_hypertable = ['imu_data', 'gps_data', 'skiing_metrics']
+            tables_to_hypertable = ['imu_data', 'gps_data', 'barometer_data', 'skiing_metrics']
             
             for table_name in tables_to_hypertable:
                 # 检查表是否存在
