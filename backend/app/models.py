@@ -170,6 +170,10 @@ class User(UserBase, table=True):
         back_populates="user", 
         cascade_delete=True
     )
+    barometer_data: list["BarometerData"] = Relationship(
+        back_populates="user", 
+        cascade_delete=True
+    )
     skiing_metrics: list["SkiingMetric"] = Relationship(
         back_populates="user", 
         cascade_delete=True
@@ -694,6 +698,7 @@ class SkiingSession(SkiingSessionBase, table=True):
     device: Optional[Device] = Relationship()
     imu_data: list["IMUData"] = Relationship(back_populates="session", cascade_delete=True)
     gps_data: list["GPSData"] = Relationship(back_populates="session", cascade_delete=True)
+    barometer_data: list["BarometerData"] = Relationship(back_populates="session", cascade_delete=True)
     skiing_metrics: list["SkiingMetric"] = Relationship(back_populates="session", cascade_delete=True)
     ai_analyses: list["AIAnalysis"] = Relationship(back_populates="session", cascade_delete=True)
 
@@ -809,6 +814,41 @@ class GPSData(GPSDataBase, table=True):
     user: User = Relationship(back_populates="gps_data")
     device: Device = Relationship()
     session: SkiingSession = Relationship(back_populates="gps_data")
+
+
+# 气压计传感器数据模型
+class BarometerDataBase(SQLModel):
+    """气压计传感器数据基础模型"""
+    timestamp: datetime = Field(description="时间戳")
+    source_id: int = Field(description="数据源模块ID")
+    pressure: Decimal = Field(max_digits=10, decimal_places=2, description="气压值")
+    temperature: Optional[Decimal] = Field(
+        default=None, 
+        max_digits=5, 
+        decimal_places=2, 
+        description="温度(°C)"
+    )
+
+
+class BarometerDataCreate(SQLModel):
+    """创建气压计数据批量"""
+    session_id: uuid.UUID = Field(description="会话ID")
+    data_points: list[dict[str, Any]] = Field(description="气压计数据点数组")
+
+
+class BarometerData(BarometerDataBase, table=True):
+    """气压计传感器数据表（时序数据，使用TimescaleDB优化）"""
+    __tablename__ = "barometer_data"
+    
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
+    device_id: uuid.UUID = Field(foreign_key="devices.id", index=True)
+    session_id: uuid.UUID = Field(foreign_key="skiing_sessions.id", index=True)
+
+    # 关系
+    user: User = Relationship(back_populates="barometer_data")
+    device: Device = Relationship()
+    session: SkiingSession = Relationship(back_populates="barometer_data")
 
 
 # 滑雪指标数据模型（算法处理后的数据）
