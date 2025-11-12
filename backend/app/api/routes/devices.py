@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Union
 from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, status, Query, Path
@@ -10,6 +10,16 @@ from sqlmodel import Session, select, func, and_, desc, asc
 
 from app.api.deps import CurrentUser, SessionDep
 from app.models import Device, UserDevice, DeviceCalibration, DeviceCreate, DeviceUpdate, DevicePublic, DeviceCalibrationCreate, DeviceCalibrationPublic
+# from app.algorithm.static_clabration import auto_calibrate_imu
+import sys
+import os
+import pandas as pd
+# 添加算法模块目录到系统路径
+current_file_dir = os.path.dirname(os.path.abspath(__file__))
+algorithm_bin_path = os.path.join(current_file_dir, '..', '..', 'algorithm', 'bin')
+sys.path.append(algorithm_bin_path)
+
+import imu_clabration
 
 
 router = APIRouter(prefix="", tags=["devices"])
@@ -81,7 +91,10 @@ class DeviceStatusUpdateRequest(BaseModel):
 class DeviceCalibrationRequest(BaseModel):
     """设备校准请求"""
     calibration_step: int = Field(ge=1, le=4, description="校准步骤(1-4)")
-    calibration_data: Optional[dict] = Field(default=None, description="校准数据")
+    calibration_data: Optional[Union[dict, List[dict]]] = Field(
+        default=None, 
+        description="校准数据"
+    )
 
 
 class DeviceCalibrationListResponse(BaseModel):
@@ -661,14 +674,249 @@ def start_device_calibration(
     if not user_device:
         raise HTTPException(status_code=403, detail="无权限访问此设备")
     
+    # 初始化校准结果字典
+    calibration_result = {}
+    calibration_status = "in_progress"
+    calibration_meta = {}
+    final_calibration_data = {}
+
+    # 处理校准数据并调用auto_calibrate_imu函数
+    if request.calibration_data:
+        print("收到数据，开始校准")
+        try:
+            # 检查新数据格式 - 包含meta和data字段
+            if isinstance(request.calibration_data, dict) and 'meta' in request.calibration_data and 'data' in request.calibration_data:
+                # 新数据格式处理：{meta: {...}, data: [[timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z], ...]}
+                meta = request.calibration_data.get('meta', {})
+                data = request.calibration_data.get('data', [])
+                
+                # 验证数据格式
+                if not isinstance(data, list) or len(data) == 0:
+                    raise HTTPException(status_code=400, detail="新格式校准数据必须包含非空的数据数组")
+                
+                # 检查每条数据的字段数量
+                for i, row in enumerate(data):
+                    if not isinstance(row, list) or len(row) != 7:
+                        raise HTTPException(
+                            status_code=400, 
+                            detail=f"数据行 {i} 格式不正确，应包含7个字段：[timestamp, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z]"
+                        )
+                
+                # 提取传感器数据
+                timestamps = [row[0] for row in data]
+                acc_x = [row[1] for row in data]
+                acc_y = [row[2] for row in data]
+                acc_z = [row[3] for row in data]
+                gyro_x = [row[4] for row in data]
+                gyro_y = [row[5] for row in data]
+                gyro_z = [row[6] for row in data]
+                
+                # 保存元数据信息
+                calibration_meta = {
+                    'device_id': meta.get('device_id', ''),
+                    'sensor_type': meta.get('sensor_type', ''),
+                    'sample_rate': meta.get('sample_rate', 0),
+                    'total_count': meta.get('total_count', len(data))
+                }
+                
+                # 保存校准数据（新格式）
+                final_calibration_data = {
+                    "meta": calibration_meta,
+                    "data_count": len(data)
+                }
+                
+                # 转换为auto_calibrate_imu函数期望的格式
+                imu_data = pd.DataFrame({
+                    'imu_acc_x': acc_x,
+                    'imu_acc_y': acc_y,
+                    'imu_acc_z': acc_z,
+                    'imu_gyro_x': gyro_x,
+                    'imu_gyro_y': gyro_y,
+                    'imu_gyro_z': gyro_z
+                })
+                
+            else:
+                # 兼容旧数据格式
+                # 检查必要的数据字段
+                required_fields = [
+                    'acc_offset_x', 'acc_offset_y', 'acc_offset_z',
+                    'gyro_offset_x', 'gyro_offset_y', 'gyro_offset_z'
+                ]
+                
+                # 支持批量处理 - 检查calibration_data是否为列表
+                if isinstance(request.calibration_data, list):
+                    # 批量处理模式
+                    all_acc_x = []
+                    all_acc_y = []
+                    all_acc_z = []
+                    all_gyro_x = []
+                    all_gyro_y = []
+                    all_gyro_z = []
+                    
+                    for data_item in request.calibration_data:
+                        # 检查每个数据项的必要字段
+                        for field in required_fields:
+                            if field not in data_item:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=f"校准数据缺少必要字段: {field}"
+                                )
+                        
+                        # 收集所有数据
+                        all_acc_x.append(float(data_item['acc_offset_x']))
+                        all_acc_y.append(float(data_item['acc_offset_y']))
+                        all_acc_z.append(float(data_item['acc_offset_z']))
+                        all_gyro_x.append(float(data_item['gyro_offset_x']))
+                        all_gyro_y.append(float(data_item['gyro_offset_y']))
+                        all_gyro_z.append(float(data_item['gyro_offset_z']))
+                    
+                    # 构建包含所有样本的DataFrame
+                    imu_data = pd.DataFrame({
+                        'imu_acc_x': all_acc_x,
+                        'imu_acc_y': all_acc_y,
+                        'imu_acc_z': all_acc_z,
+                        'imu_gyro_x': all_gyro_x,
+                        'imu_gyro_y': all_gyro_y,
+                        'imu_gyro_z': all_gyro_z
+                    })
+                    
+                    # 保存原始校准数据
+                    final_calibration_data = {'raw_calibration_data': request.calibration_data}
+                else:
+                    # 单条数据模式（保持向后兼容）
+                    for field in required_fields:
+                        if field not in request.calibration_data:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"校准数据缺少必要字段: {field}"
+                            )
+                    
+                    # 构建IMU数据DataFrame，直接使用校准数据
+                    imu_data = pd.DataFrame({
+                        'imu_acc_x': [float(request.calibration_data['acc_offset_x'])],
+                        'imu_acc_y': [float(request.calibration_data['acc_offset_y'])],
+                        'imu_acc_z': [float(request.calibration_data['acc_offset_z'])],
+                        'imu_gyro_x': [float(request.calibration_data['gyro_offset_x'])],
+                        'imu_gyro_y': [float(request.calibration_data['gyro_offset_y'])],
+                        'imu_gyro_z': [float(request.calibration_data['gyro_offset_z'])]
+                    })
+                    
+                    # 保存原始校准数据
+                    final_calibration_data = request.calibration_data.copy()
+
+            # 加速度处理，把单位从g转换为m/s^2
+            GRAVITY = 9.80665
+            acc_columns = ['imu_acc_x', 'imu_acc_y', 'imu_acc_z']
+            for col in acc_columns:
+                imu_data[col] = imu_data[col] * GRAVITY
+                
+            # 调用校准算法
+            print("开始校准")
+            success, result = imu_clabration.auto_calibrate_imu(
+                imu_data,
+                static_window_size=100,
+                rotation_window_size=200,
+                rotation_purity_threshold=0.8,
+                verbose=False
+            )
+            
+            if success:
+                # 打印校准结果
+                print("校准成功")
+                print("旋转矩阵:", result['R_board_to_imu'].tolist())
+                print("安装角度:", result['installation_angles'].tolist())
+                print("纯度:", result['purity'])
+                print("静态窗口:", result['static_slice'])
+                print("旋转窗口:", result['rotation_slice'])
+
+                calibration_result = {
+                    'calibration_success': True,
+                    'rotation_matrix': result['R_board_to_imu'].tolist(),
+                    'installation_angles': result['installation_angles'].tolist(),
+                    'purity': result['purity'],
+                    'static_window': {
+                        'start': result['static_slice'].start,
+                        'stop': result['static_slice'].stop
+                    },
+                    'rotation_window': {
+                        'start': result['rotation_slice'].start,
+                        'stop': result['rotation_slice'].stop
+                    }
+                }
+                calibration_status = "completed"
+            else:
+                # 打印校准失败信息
+                print("校准失败:", result)
+                calibration_result = {
+                    'calibration_success': False,
+                    'error_message': result
+                }
+                calibration_status = "failed"
+                
+        except Exception as e:
+            # 捕获所有异常，确保API不会崩溃
+            print(f"校准过程中发生错误: {str(e)}")
+            calibration_result = {
+                'calibration_success': False,
+                'error_message': f"校准过程中发生错误: {str(e)}"
+            }
+            calibration_status = "failed"
+    
+    # 合并原始校准数据和校准结果
+    final_calibration_data.update(calibration_result)
+    
     # 创建设备校准记录
     calibration = DeviceCalibration(
         user_id=current_user.id,
         device_id=device.id,
         calibration_step=request.calibration_step,
-        calibration_status="in_progress",
-        calibration_data=request.calibration_data
+        calibration_status=calibration_status,
+        calibration_data=final_calibration_data
     )
+    
+    # 设置校准数据字段（从calibration_data dict拆分）
+    if request.calibration_data:
+        if isinstance(request.calibration_data, dict) and 'meta' in request.calibration_data and 'data' in request.calibration_data:
+            # 新数据格式 - 使用第一条数据作为偏移量
+            data = request.calibration_data.get('data', [])
+            if data:
+                # 使用第一条数据
+                first_item = data[0]
+                acc_x_avg = float(first_item[1])
+                acc_y_avg = float(first_item[2])
+                acc_z_avg = float(first_item[3])
+                gyro_x_avg = float(first_item[4])
+                gyro_y_avg = float(first_item[5])
+                gyro_z_avg = float(first_item[6])
+                
+                calibration.acc_offset_x = Decimal(str(acc_x_avg))
+                calibration.acc_offset_y = Decimal(str(acc_y_avg))
+                calibration.acc_offset_z = Decimal(str(acc_z_avg))
+                calibration.gyro_offset_x = Decimal(str(gyro_x_avg))
+                calibration.gyro_offset_y = Decimal(str(gyro_y_avg))
+                calibration.gyro_offset_z = Decimal(str(gyro_z_avg))
+        elif isinstance(request.calibration_data, list) and request.calibration_data:
+            # 批量处理模式 - 使用第一个数据项的值
+            first_item = request.calibration_data[0]
+            calibration.acc_offset_x = Decimal(str(first_item.get('acc_offset_x', 0)))
+            calibration.acc_offset_y = Decimal(str(first_item.get('acc_offset_y', 0)))
+            calibration.acc_offset_z = Decimal(str(first_item.get('acc_offset_z', 0)))
+            calibration.gyro_offset_x = Decimal(str(first_item.get('gyro_offset_x', 0)))
+            calibration.gyro_offset_y = Decimal(str(first_item.get('gyro_offset_y', 0)))
+            calibration.gyro_offset_z = Decimal(str(first_item.get('gyro_offset_z', 0)))
+        else:
+            # 单条数据模式
+            calibration.acc_offset_x = Decimal(str(request.calibration_data.get('acc_offset_x', 0)))
+            calibration.acc_offset_y = Decimal(str(request.calibration_data.get('acc_offset_y', 0)))
+            calibration.acc_offset_z = Decimal(str(request.calibration_data.get('acc_offset_z', 0)))
+            calibration.gyro_offset_x = Decimal(str(request.calibration_data.get('gyro_offset_x', 0)))
+            calibration.gyro_offset_y = Decimal(str(request.calibration_data.get('gyro_offset_y', 0)))
+            calibration.gyro_offset_z = Decimal(str(request.calibration_data.get('gyro_offset_z', 0)))
+    
+    # 如果校准成功，设置完成时间
+    if calibration_status == "completed":
+        calibration.completed_at = datetime.utcnow()
+    
     session.add(calibration)
     session.commit()
     session.refresh(calibration)

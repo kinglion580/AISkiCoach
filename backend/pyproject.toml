@@ -24,6 +24,9 @@ dependencies = [
     "sentry-sdk[fastapi]<2.0.0,>=1.40.6",
     "pyjwt<3.0.0,>=2.8.0",
     "redis>=6.4.0",
+    "pandas>=2.3.3",
+    "numpy>=2.2.6",
+    "scipy>=1.15.3",
 ]
 
 [tool.uv]
