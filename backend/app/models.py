@@ -536,7 +536,7 @@ class DeviceCalibration(DeviceCalibrationBase, table=True):
     completed_at: Optional[datetime] = Field(default=None, description="完成时间")
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
-    # 校准数据字段（从calibration_data dict拆分）
+    # 校准数据字段（用于存储偏移量等基础数据）
     # 加速度计偏移
     acc_offset_x: Optional[Decimal] = Field(default=None, max_digits=10, decimal_places=6, description="加速度计X轴偏移")
     acc_offset_y: Optional[Decimal] = Field(default=None, max_digits=10, decimal_places=6, description="加速度计Y轴偏移")
@@ -552,16 +552,66 @@ class DeviceCalibration(DeviceCalibrationBase, table=True):
     # 校准精度
     calibration_accuracy: Optional[Decimal] = Field(default=None, max_digits=5, decimal_places=2, description="校准精度评分")
     
-    # 详细校准数据（JSON格式，符合文档要求）
-    calibration_data: Optional[dict[str, Any]] = Field(
-        default=None, 
-        sa_column=Column(PostgresJSON), 
-        description="详细校准数据JSON"
+    # 新增：结构化校准结果字段
+    # 旋转矩阵（3x3矩阵，存储为JSON）
+    rotation_matrix: Optional[dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(PostgresJSON),
+        description="旋转矩阵 R_board_to_imu (3x3)"
     )
+    # 安装角度（3个角度值，存储为JSON数组）
+    installation_angles: Optional[dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(PostgresJSON),
+        description="安装角度 [x, y, z]"
+    )
+    # 纯度分数
+    purity: Optional[Decimal] = Field(default=None, max_digits=10, decimal_places=6, description="校准纯度分数")
+    # 静态窗口索引
+    static_window_start: Optional[int] = Field(default=None, description="静态窗口起始索引")
+    static_window_end: Optional[int] = Field(default=None, description="静态窗口结束索引")
+    # 旋转窗口索引
+    rotation_window_start: Optional[int] = Field(default=None, description="旋转窗口起始索引")
+    rotation_window_end: Optional[int] = Field(default=None, description="旋转窗口结束索引")
+    # 算法参数
+    static_window_size: Optional[int] = Field(default=None, description="静态窗口大小")
+    rotation_window_size: Optional[int] = Field(default=None, description="旋转窗口大小")
+    rotation_purity_threshold: Optional[Decimal] = Field(default=None, max_digits=5, decimal_places=2, description="旋转纯度阈值")
+    # 统计信息
+    total_samples: Optional[int] = Field(default=None, description="总样本数")
+    sample_rate: Optional[Decimal] = Field(default=None, max_digits=10, decimal_places=2, description="采样率(Hz)")
+    # 失败原因
+    failure_reason: Optional[str] = Field(default=None, description="校准失败原因")
 
     # 关系
     user: User = Relationship(back_populates="device_calibrations")
     device: Device = Relationship(back_populates="calibrations")
+    samples: list["DeviceCalibrationSample"] = Relationship(
+        back_populates="calibration",
+        cascade_delete=True
+    )
+
+
+class DeviceCalibrationSample(SQLModel, table=True):
+    """设备校准原始数据样本表"""
+    __tablename__ = "device_calibration_samples"
+    
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    calibration_id: uuid.UUID = Field(foreign_key="device_calibrations.id", index=True, description="校准记录ID")
+    sample_index: int = Field(index=True, description="样本在序列中的索引")
+    timestamp: Optional[datetime] = Field(default=None, index=True, description="时间戳")
+    # 加速度数据（单位：g）
+    acc_x: Decimal = Field(max_digits=10, decimal_places=6, description="加速度X (g)")
+    acc_y: Decimal = Field(max_digits=10, decimal_places=6, description="加速度Y (g)")
+    acc_z: Decimal = Field(max_digits=10, decimal_places=6, description="加速度Z (g)")
+    # 陀螺仪数据（单位：rad/s）
+    gyro_x: Decimal = Field(max_digits=10, decimal_places=6, description="陀螺仪X (rad/s)")
+    gyro_y: Decimal = Field(max_digits=10, decimal_places=6, description="陀螺仪Y (rad/s)")
+    gyro_z: Decimal = Field(max_digits=10, decimal_places=6, description="陀螺仪Z (rad/s)")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    # 关系
+    calibration: "DeviceCalibration" = Relationship(back_populates="samples")
 
 
 class DeviceCalibrationPublic(SQLModel):
@@ -571,7 +621,17 @@ class DeviceCalibrationPublic(SQLModel):
     device_id: uuid.UUID
     calibration_step: int
     calibration_status: str
-    calibration_data: dict[str, Any] = Field(description="校准数据")
+    # 结构化校准结果
+    rotation_matrix: Optional[dict[str, Any]] = None
+    installation_angles: Optional[dict[str, Any]] = None
+    purity: Optional[Decimal] = None
+    static_window_start: Optional[int] = None
+    static_window_end: Optional[int] = None
+    rotation_window_start: Optional[int] = None
+    rotation_window_end: Optional[int] = None
+    total_samples: Optional[int] = None
+    sample_rate: Optional[Decimal] = None
+    failure_reason: Optional[str] = None
     completed_at: Optional[datetime] = None
     created_at: datetime
 
