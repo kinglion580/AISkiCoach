@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from datetime import datetime
 import uuid
+import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -24,255 +25,416 @@ else:
     DB_NAME = os.getenv('DB_NAME', 'app')
     engine = create_engine(f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}')
 
-def generate_random_uuid():
-    """生成随机UUID"""
-    return str(uuid.uuid4())
+# 固定的用户、设备、会话ID
+FIXED_USER_ID = "10000000-0000-0000-0000-000000000001"
+FIXED_DEVICE_ID = "10000000-0000-0000-0000-000000000002"  
+FIXED_SESSION_ID = "10000000-0000-0000-0000-000000000003"
 
-def ensure_required_records(conn, session_id):
-    """确保必要的外键记录存在"""
-    user_id = generate_random_uuid()
-    device_id = generate_random_uuid()
+def get_source_id(device_name):
+    """根据设备名称映射source_id
     
-    # 尝试创建用户记录（如果表存在）
-    try:
-        # 检查users表是否存在
-        user_table_exists = conn.execute(text("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE  table_schema = 'public'
-                AND    table_name   = 'users'
-            )
-        """)).scalar()
+    Args:
+        device_name (str): 设备名称
         
-        if user_table_exists:
-            # 插入用户记录
-            conn.execute(text("""
-                INSERT INTO users (id, created_at, updated_at, email, password_hash, name, is_active)
-                VALUES (:id, NOW(), NOW(), :email, :password_hash, :name, true)
-                ON CONFLICT (id) DO NOTHING
-            """), {
-                'id': user_id,
-                'email': f'temp_user_{datetime.now().strftime("%Y%m%d%H%M%S")}@example.com',
-                'password_hash': 'temp_password_hash',
-                'name': '临时导入用户'
-            })
-            print(f"创建或使用用户记录: {user_id}")
+    Returns:
+        int: 对应的source_id值
+            雪板 -> 0
+            left  -> 1  
+            right -> 2
+            其他   -> 0 (默认值)
+    """
+    if not device_name:
+        return 0
+    
+    # device_name_lower = device_name.lower().strip()
+    
+    # 雪板相关映射到0 - 只要包含关键词就匹配
+    if device_name in ['WTB1', 'board', 'WTB3']:
+        return 0
+    
+    # left相关映射到1 - 只要包含关键词就匹配
+    elif device_name in ['WTL1', 'left', 'WTL3']:
+        return 1
+    
+    # right相关映射到2 - 只要包含关键词就匹配
+    elif device_name in ['WTR1', 'right', 'WTR3']:
+        return 2
+    
+    # 默认返回0
+    else:
+        return 0
+
+def ensure_required_records(conn, session_id=None, device_id=None, user_id=None):
+    """确保必要的外键记录存在"""
+    # 使用固定ID
+    if user_id is None:
+        user_id = FIXED_USER_ID
+    if device_id is None:
+        device_id = FIXED_DEVICE_ID
+    if session_id is None:
+        session_id = FIXED_SESSION_ID
+    
+    # 每个表操作使用独立事务，避免一个失败影响其他操作
+    # 1. 创建用户记录（如果表存在）
+    try:
+        with engine.begin() as user_conn:
+            # 检查users表是否存在
+            user_table_exists = user_conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE  table_schema = 'public'
+                    AND    table_name   = 'users'
+                )
+            """)).scalar()
+            
+            if user_table_exists:
+                # 插入用户记录
+                user_conn.execute(text("""
+                    INSERT INTO users (id, created_at, updated_at, email, password_hash, name, is_active)
+                    VALUES (:id, NOW(), NOW(), :email, :password_hash, :name, true)
+                    ON CONFLICT (id) DO NOTHING
+                """), {
+                    'id': user_id,
+                    'email': f'temp_user_{datetime.now().strftime("%Y%m%d%H%M%S")}@example.com',
+                    'password_hash': 'temp_password_hash',
+                    'name': '临时导入用户'
+                })
+                print(f"创建或使用用户记录: {user_id}")
     except Exception as e:
         print(f"创建用户记录失败: {e}")
     
-    # 尝试创建设备记录（如果表存在）
+    # 2. 创建设备记录（如果表存在）
     try:
-        # 检查devices表是否存在
-        device_table_exists = conn.execute(text("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE  table_schema = 'public'
-                AND    table_name   = 'devices'
-            )
-        """)).scalar()
-        
-        if device_table_exists:
-            # 插入设备记录
-            conn.execute(text("""
-                INSERT INTO devices (id, created_at, updated_at, name, device_type, user_id)
-                VALUES (:id, NOW(), NOW(), :name, :device_type, :user_id)
-                ON CONFLICT (id) DO NOTHING
-            """), {
-                'id': device_id,
-                'name': 'IMU导入设备',
-                'device_type': 'imu',
-                'user_id': user_id
-            })
-            print(f"创建或使用设备记录: {device_id}")
+        with engine.begin() as device_conn:
+            # 检查devices表是否存在
+            device_table_exists = device_conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE  table_schema = 'public'
+                    AND    table_name   = 'devices'
+                )
+            """)).scalar()
+            
+            if device_table_exists:
+                # 插入设备记录
+                device_conn.execute(text("""
+                    INSERT INTO devices (id, created_at, updated_at, name, device_type, user_id)
+                    VALUES (:id, NOW(), NOW(), :name, :device_type, :user_id)
+                    ON CONFLICT (id) DO NOTHING
+                """), {
+                    'id': device_id,
+                    'name': 'IMU导入设备',
+                    'device_type': 'imu',
+                    'user_id': user_id
+                })
+                print(f"创建或使用设备记录: {device_id}")
     except Exception as e:
         print(f"创建设备记录失败: {e}")
     
-    # 尝试创建滑雪会话记录（如果表存在）
+    # 3. 创建滑雪会话记录（如果表存在）
     try:
-        # 检查skiing_sessions表是否存在
-        session_table_exists = conn.execute(text("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE  table_schema = 'public'
-                AND    table_name   = 'skiing_sessions'
-            )
-        """)).scalar()
-        
-        if session_table_exists:
-            # 插入会话记录
-            conn.execute(text("""
-                INSERT INTO skiing_sessions (id, created_at, updated_at, user_id, start_time, end_time)
-                VALUES (:id, NOW(), NOW(), :user_id, NOW(), NOW())
-                ON CONFLICT (id) DO NOTHING
-            """), {
-                'id': session_id,
-                'user_id': user_id
-            })
-            print(f"创建或使用会话记录: {session_id}")
+        with engine.begin() as session_conn:
+            # 检查skiing_sessions表是否存在
+            session_table_exists = session_conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE  table_schema = 'public'
+                    AND    table_name   = 'skiing_sessions'
+                )
+            """)).scalar()
+            
+            if session_table_exists:
+                # 插入会话记录
+                session_conn.execute(text("""
+                    INSERT INTO skiing_sessions (id, created_at, updated_at, user_id, start_time, end_time)
+                    VALUES (:id, NOW(), NOW(), :user_id, NOW(), NOW())
+                    ON CONFLICT (id) DO NOTHING
+                """), {
+                    'id': session_id,
+                    'user_id': user_id
+                })
+                print(f"创建或使用会话记录: {session_id}")
     except Exception as e:
         print(f"创建会话记录失败: {e}")
     
     return user_id, device_id
 
-def import_imu_data(csv_file_path):
-    """从CSV文件导入IMU数据到数据库，使用临时表方法避免外键约束问题"""
-    print(f"开始导入IMU数据...")
+
+class IMUDataProcessor:
+    """IMU数据处理器"""
     
-    # 读取CSV文件
+    def __init__(self):
+        pass
+    
+    # --- 2. 私有读取器 (基于你提供的逻辑) --- 
+    def _read_wt_imu(self, file_path):
+        """读取WT公司IMU数据文件"""
+        print(f"读取WT IMU文件: {file_path}")
+        
+        # 检测文件扩展名，选择合适的分隔符
+        file_extension = Path(file_path).suffix.lower()
+        if file_extension == '.txt':
+            print("检测到TXT文件，使用制表符分隔符...")
+            df = pd.read_csv(file_path, sep='\t', encoding='utf-8')
+        else:
+            print("检测到CSV文件，使用逗号分隔符...")
+            df = pd.read_csv(file_path, sep=',', encoding='utf-8')
+            
+        print(f"原始 IMU 文件已读取: {len(df)} 行")
+
+        # 定义英文字段和对应的中文字段
+        en_selected_columns = ['time', 'DeviceName', 'AccX(g)', 'AccY(g)', 'AccZ(g)', 
+                             'AsX(°/s)', 'AsY(°/s)', 'AsZ(°/s)', 'HX(uT)', 'HY(uT)', 'HZ(uT)']
+        
+        zh_selected_columns = ['时间', '设备名称', '加速度X(g)', '加速度Y(g)', '加速度Z(g)', 
+                             '角速度X(°/s)', '角速度Y(°/s)', '角速度Z(°/s)', '磁场X(uT)', '磁场Y(uT)', '磁场Z(uT)']
+
+        # 检测数据格式并提取列
+        if all(col in df.columns for col in en_selected_columns):
+            print("  > 检测到维特英文格式，正在提取列...")
+            df = df[en_selected_columns].copy()
+            
+            # 重命名英文字段为中文
+            df = df.rename(columns={
+                'time': '时间',
+                'DeviceName': '设备名称',
+                'AccX(g)': '加速度X(g)',
+                'AccY(g)': '加速度Y(g)',
+                'AccZ(g)': '加速度Z(g)',
+                'AsX(°/s)': '角速度X(°/s)',
+                'AsY(°/s)': '角速度Y(°/s)',
+                'AsZ(°/s)': '角速度Z(°/s)',
+                'HX(uT)': '磁场X(uT)',
+                'HY(uT)': '磁场Y(uT)',
+                'HZ(uT)': '磁场Z(uT)'
+            })
+            
+        elif all(col in df.columns for col in zh_selected_columns):
+            print("  > 检测到维特中文格式，正在提取列...")
+            df = df[zh_selected_columns].copy()
+        else:
+            print("  > 未检测到WT格式，尝试使用现有列名...")
+            # 尝试映射常见的列名
+            column_mapping = {}
+            for col in df.columns:
+                col_lower = col.lower()
+                if 'time' in col_lower or '时间' in col:
+                    column_mapping[col] = '时间'
+                elif 'device' in col_lower or '设备' in col:
+                    column_mapping[col] = '设备名称'
+                elif 'acc' in col_lower and 'x' in col_lower:
+                    column_mapping[col] = '加速度X(g)'
+                elif 'acc' in col_lower and 'y' in col_lower:
+                    column_mapping[col] = '加速度Y(g)'
+                elif 'acc' in col_lower and 'z' in col_lower:
+                    column_mapping[col] = '加速度Z(g)'
+                elif ('gyro' in col_lower or '角速度' in col) and 'x' in col_lower:
+                    column_mapping[col] = '角速度X(°/s)'
+                elif ('gyro' in col_lower or '角速度' in col) and 'y' in col_lower:
+                    column_mapping[col] = '角速度Y(°/s)'
+                elif ('gyro' in col_lower or '角速度' in col) and 'z' in col_lower:
+                    column_mapping[col] = '角速度Z(°/s)'
+                elif ('mag' in col_lower or '磁场' in col) and 'x' in col_lower:
+                    column_mapping[col] = '磁场X(uT)'
+                elif ('mag' in col_lower or '磁场' in col) and 'y' in col_lower:
+                    column_mapping[col] = '磁场Y(uT)'
+                elif ('mag' in col_lower or '磁场' in col) and 'z' in col_lower:
+                    column_mapping[col] = '磁场Z(uT)'
+            
+            if column_mapping:
+                df = df.rename(columns=column_mapping)
+                print(f"  > 成功映射 {len(column_mapping)} 个列名")
+            else:
+                print("  > 无法识别列名，保持原样")
+
+        # --- 标准化 ---
+        if '设备名称' in df.columns:
+            df['设备名称'] = df['设备名称'].str.split('(', n=1).str[0]
+
+
+        # --- 目标格式 ---
+        column_mapping = {
+            '时间': 'timestamp',
+            '设备名称': 'device_name',
+            '加速度X(g)': 'acc_x',
+            '加速度Y(g)': 'acc_y',
+            '加速度Z(g)': 'acc_z',
+            '角速度X(°/s)': 'gyro_x',
+            '角速度Y(°/s)': 'gyro_y',
+            '角速度Z(°/s)': 'gyro_z',
+            '磁场X(uT)': 'mag_x',
+            '磁场Y(uT)': 'mag_y',
+            '磁场Z(uT)': 'mag_z'
+        }
+
+        df = df.rename(columns=column_mapping)
+      
+        # --- 定义列的顺序 ---
+        column_order = ['timestamp', 'datetime', 'device_name', 'gyro_x', 'gyro_y', 'gyro_z',
+                       'mag_x', 'mag_y', 'mag_z', 'acc_x', 'acc_y', 'acc_z']
+        
+        # 确保所有列都存在，如果不存在则填充NaN
+        for col in column_order:
+            if col not in df.columns:
+                df[col] = None
+                
+        df = df[column_order]
+
+        print(f"WT IMU数据处理完成: {len(df)} 行")
+        return df
+
+def import_imu_data(csv_file_path, session_id=None, device_id=None, user_id=None):
+    """从CSV/TXT文件导入IMU数据到数据库，使用新的数据处理器和临时表方法"""
+    # 验证文件
     csv_path = Path(csv_file_path)
     if not csv_path.exists():
-        print(f"错误：找不到文件 {csv_file_path}")
-        return
+        print(f"错误：文件不存在: {csv_file_path}")
+        return False
     
-    # 创建统一的会话ID
-    session_id = generate_random_uuid()
-    print(f"使用统一会话ID: {session_id}")
+    print(f"开始导入IMU数据: {csv_file_path}")
+    
+    # 初始化数据处理器
+    processor = IMUDataProcessor()
     
     try:
+        # 使用新的数据处理器读取文件
+        print("使用新的数据处理器读取文件...")
+        
+        # 检测文件类型并选择适当的读取方法
+        file_extension = Path(csv_file_path).suffix.lower()
+        
+        if file_extension == '.txt' or file_extension == '.csv':
+            # 使用WT IMU数据处理器
+            df = processor._read_wt_imu(csv_file_path)
+        else:
+            print(f"不支持的文件格式: {file_extension}")
+            return False
+        
+        if df is None or len(df) == 0:
+            print("读取的数据为空")
+            return False
+            
+        print(f"成功读取 {len(df)} 行数据")
+        
+        # 使用事务性连接 - 确保自动管理事务
         with engine.begin() as conn:
-            # 确保必要的外键记录存在
-            user_id, device_id = ensure_required_records(conn, session_id)
+            
+            # 使用固定的会话ID，如果没有指定则使用默认值
+            if session_id is None:
+                session_id = FIXED_SESSION_ID
+                print(f"使用固定滑雪会话: {session_id}")
+            
+            # 确保必需的用户和设备记录存在
+            user_id, device_id = ensure_required_records(conn, session_id, device_id, user_id)
             
             # 1. 创建临时表
             print("创建临时表...")
-            conn.execute(text("""
-                DROP TABLE IF EXISTS imu_data_temp;
-                CREATE TABLE imu_data_temp (
-                    id VARCHAR(36) PRIMARY KEY,
-                    timestamp TIMESTAMP NOT NULL,
-                    source_id INTEGER,
-                    device_name VARCHAR(100),
-                    acc_x DOUBLE PRECISION,
-                    acc_y DOUBLE PRECISION,
-                    acc_z DOUBLE PRECISION,
-                    gyro_x DOUBLE PRECISION,
-                    gyro_y DOUBLE PRECISION,
-                    gyro_z DOUBLE PRECISION,
-                    mag_x DOUBLE PRECISION,
-                    mag_y DOUBLE PRECISION,
-                    mag_z DOUBLE PRECISION
-                )
-            """))
-            
-            # 准备数据导入到临时表
-            total_rows = 0
-            success_count = 0
-            errors = 0
-            
-            with open(csv_file_path, mode='r', encoding='utf-8') as file:
-                reader = csv.DictReader(file)
+            try:
+                # 先删除临时表（如果存在）
+                conn.execute(text("DROP TABLE IF EXISTS imu_data_temp"))
                 
-                for row in reader:
-                    total_rows += 1
-                    
+                # 创建临时表
+                conn.execute(text("""
+                    CREATE TEMP TABLE imu_data_temp (
+                        id UUID PRIMARY KEY,
+                        timestamp TIMESTAMP NOT NULL,
+                        source_id INTEGER,
+                        device_name VARCHAR(100),
+                        acc_x DOUBLE PRECISION,
+                        acc_y DOUBLE PRECISION,
+                        acc_z DOUBLE PRECISION,
+                        gyro_x DOUBLE PRECISION,
+                        gyro_y DOUBLE PRECISION,
+                        gyro_z DOUBLE PRECISION,
+                        mag_x DOUBLE PRECISION,
+                        mag_y DOUBLE PRECISION,
+                        mag_z DOUBLE PRECISION
+                    )
+                """))
+                print("成功创建临时表")
+            except Exception as e:
+                print(f"创建临时表失败: {e}")
+                raise
+            
+            # 2. 准备数据导入到临时表
+            print("准备批量插入数据...")
+            total_rows = len(df)
+            success_count = 0
+            
+            try:
+                # 批量处理数据
+                temp_records = []
+                
+                for idx, row in df.iterrows():
                     try:
                         # 准备临时表记录
                         temp_record = {
-                            'id': generate_random_uuid(),
-                            'timestamp': None,
-                            'source_id': 1,  # 数据库表要求integer类型
-                            'device_name': row.get('设备名称', 'unknown')
+                            'id': uuid.uuid4(),  # 为每行数据生成唯一ID
+                            'timestamp': row.get('timestamp'),
+                            'source_id': get_source_id(row.get('device_name', 'unknown')),  # 根据设备名称映射source_id
+                            'device_name': row.get('device_name', 'unknown')
                         }
                         
-                        # 修复时间戳解析格式 - 处理没有前导零的情况和毫秒格式
-                        timestamp_str = row.get('timestamp', row.get('时间戳', ''))
-                        try:
-                            # 尝试解析带毫秒的格式
-                            if ':' in timestamp_str.split('.')[-1] or len(timestamp_str.split(':')) > 3:
-                                # 处理格式: '2025-7-3 17:44:17:747'
-                                parts = timestamp_str.split(' ')
-                                date_parts = parts[0].split('-')
-                                time_parts = parts[1].split(':')
-                                
-                                # 添加前导零
-                                year = int(date_parts[0])
-                                month = int(date_parts[1])
-                                day = int(date_parts[2])
-                                hour = int(time_parts[0])
-                                minute = int(time_parts[1])
-                                second = int(time_parts[2])
-                                microsecond = int(time_parts[3]) * 1000  # 毫秒转微秒
-                                
-                                temp_record['timestamp'] = datetime(year, month, day, hour, minute, second, microsecond)
-                            elif '.' in timestamp_str:
-                                temp_record['timestamp'] = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f')
-                            else:
-                                temp_record['timestamp'] = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
-                        except Exception as e:
-                            print(f"时间戳解析失败: {timestamp_str}, 错误: {e}")
-                            # 使用当前时间作为备用
-                            temp_record['timestamp'] = datetime.utcnow()
+                        # 确保timestamp不为空
+                        if pd.isna(temp_record['timestamp']):
+                            print(f"行 {idx} 时间戳为空，跳过此行")
+                            continue
                         
-                        # 尝试获取加速度数据（支持多种列名格式）
-                        try:
-                            if 'imu_acc_x' in row and row['imu_acc_x']:
-                                temp_record["acc_x"] = float(row['imu_acc_x'])
-                                temp_record["acc_y"] = float(row['imu_acc_y'])
-                                temp_record["acc_z"] = float(row['imu_acc_z'])
-                            elif '加速度_x' in row and row['加速度_x']:
-                                temp_record["acc_x"] = float(row['加速度_x'])
-                                temp_record["acc_y"] = float(row['加速度_y'])
-                                temp_record["acc_z"] = float(row['加速度_z'])
-                            else:
-                                print(f"行 {total_rows} 缺少加速度数据")
-                                continue  # 跳过这一行
-                        except ValueError:
-                            print(f"行 {total_rows} 加速度数据格式错误")
-                            continue  # 跳过这一行
+                        # 确保timestamp是datetime类型
+                        if not isinstance(temp_record['timestamp'], pd.Timestamp):
+                            try:
+                                temp_record['timestamp'] = pd.to_datetime(temp_record['timestamp'])
+                            except:
+                                print(f"行 {idx} 时间戳格式错误，跳过此行")
+                                continue
                         
-                        # 尝试获取角速度数据（支持多种列名格式）
-                        try:
-                            if 'imu_gyro_x' in row and row['imu_gyro_x']:
-                                temp_record["gyro_x"] = float(row['imu_gyro_x'])
-                                temp_record["gyro_y"] = float(row['imu_gyro_y'])
-                                temp_record["gyro_z"] = float(row['imu_gyro_z'])
-                            elif '角速度_x' in row and row['角速度_x']:
-                                temp_record["gyro_x"] = float(row['角速度_x'])
-                                temp_record["gyro_y"] = float(row['角速度_y'])
-                                temp_record["gyro_z"] = float(row['角速度_z'])
-                            else:
-                                print(f"行 {total_rows} 缺少角速度数据")
-                                continue  # 跳过这一行
-                        except ValueError:
-                            print(f"行 {total_rows} 角速度数据格式错误")
-                            continue  # 跳过这一行
+                        # 转换pandas时间戳为Python datetime
+                        temp_record['timestamp'] = temp_record['timestamp'].to_pydatetime()
                         
-                        # 处理可能为空的磁力计数据
-                        try:
-                            if ('imu_mag_x' in row and row['imu_mag_x']) or ('磁力计_x' in row and row['磁力计_x']):
-                                if 'imu_mag_x' in row and row['imu_mag_x']:
-                                    temp_record["mag_x"] = float(row['imu_mag_x'])
-                                    temp_record["mag_y"] = float(row['imu_mag_y'])
-                                    temp_record["mag_z"] = float(row['imu_mag_z'])
+                        # 获取数值数据，处理NaN值
+                        numeric_columns = ['acc_x', 'acc_y', 'acc_z', 'gyro_x', 'gyro_y', 'gyro_z', 'mag_x', 'mag_y', 'mag_z']
+                        for col in numeric_columns:
+                            if col in df.columns:
+                                value = row.get(col)
+                                if pd.notna(value):
+                                    temp_record[col] = float(value)
                                 else:
-                                    temp_record["mag_x"] = float(row['磁力计_x'])
-                                    temp_record["mag_y"] = float(row['磁力计_y'])
-                                    temp_record["mag_z"] = float(row['磁力计_z'])
-                        except ValueError:
-                            print(f"行 {total_rows} 磁力计数据格式错误，忽略磁力计数据")
+                                    temp_record[col] = None
                         
-                        # 插入临时表
-                        cols = ', '.join(k for k, v in temp_record.items() if v is not None)
-                        placeholders = ', '.join(f":{k}" for k, v in temp_record.items() if v is not None)
-                        params = {k: v for k, v in temp_record.items() if v is not None}
-                        
-                        query = text(f"INSERT INTO imu_data_temp ({cols}) VALUES ({placeholders})")
-                        conn.execute(query, params)
-                        
+                        temp_records.append(temp_record)
                         success_count += 1
                         
-                        # 打印进度
-                        if total_rows % 1000 == 0:
-                            print(f"已处理 {total_rows} 行数据")
-                            
                     except Exception as e:
-                        errors += 1
-                        # 仅在遇到较多错误时打印
-                        if errors <= 10 or errors % 100 == 0:
-                            print(f"处理行 {total_rows} 失败: {str(e)[:100]}...")
+                        print(f"处理行 {idx} 失败: {str(e)}")
                         continue
+                
+                # 批量插入数据
+                if temp_records:
+                    print(f"准备插入 {len(temp_records)} 条记录到临时表...")
+                    
+                    # 构建批量插入查询
+                    all_keys = set()
+                    for record in temp_records:
+                        all_keys.update(record.keys())
+                    
+                    cols = ', '.join(sorted(all_keys))
+                    placeholders = ', '.join(f":{k}" for k in sorted(all_keys))
+                    
+                    query = text(f"INSERT INTO imu_data_temp ({cols}) VALUES ({placeholders})")
+                    
+                    # 批量执行插入
+                    for record in temp_records:
+                        # 确保所有字段都存在
+                        complete_record = {k: record.get(k) for k in sorted(all_keys)}
+                        conn.execute(query, complete_record)
+                    
+                    print(f"成功插入 {success_count} 条记录到临时表")
+                
+            except Exception as e:
+                print(f"批量插入数据失败: {str(e)}")
+                raise
             
-            # 2. 将临时表数据迁移到主表
+            # 3. 将临时表数据迁移到主表
             print(f"临时表导入完成，成功导入 {success_count} 行数据")
             print("开始将数据从临时表迁移到imu_data主表...")
             
@@ -288,7 +450,7 @@ def import_imu_data(csv_file_path):
                 
                 if not table_exists:
                     print("错误：数据库中不存在imu_data表")
-                    return
+                    return False
                 
                 # 获取imu_data表的列信息
                 result = conn.execute(text("""
@@ -300,21 +462,19 @@ def import_imu_data(csv_file_path):
                 imu_data_columns = [row[0] for row in result.fetchall()]
                 
                 # 构建INSERT INTO SELECT语句
-                # 确保只插入存在的列
                 insert_cols = []
                 select_clauses = []
-                query_params = {}
                 
                 # 必需的外键字段
                 if 'user_id' in imu_data_columns:
                     insert_cols.append('user_id')
-                    select_clauses.append(f"'{user_id}'::uuid")
+                    select_clauses.append(f"'{user_id}'")
                 if 'device_id' in imu_data_columns:
                     insert_cols.append('device_id')
-                    select_clauses.append(f"'{device_id}'::uuid")
+                    select_clauses.append(f"'{device_id}'")
                 if 'session_id' in imu_data_columns:
                     insert_cols.append('session_id')
-                    select_clauses.append(f"'{session_id}'::uuid")
+                    select_clauses.append(f"'{session_id}'")
                 
                 # 从临时表映射的字段
                 column_mapping = {
@@ -360,25 +520,34 @@ def import_imu_data(csv_file_path):
                 print(f"数据迁移失败: {str(e)}")
                 raise
             
-            # 3. 清理临时表
+            # 4. 清理临时表（会话结束时自动清理）
             print("清理临时表...")
             conn.execute(text("DROP TABLE IF EXISTS imu_data_temp"))
             
-            # 4. 验证导入结果
-            verify_result = conn.execute(text("""
-                SELECT COUNT(*) FROM imu_data 
-                WHERE session_id = :session_id
-            """), {'session_id': session_id})
-            
-            final_count = verify_result.scalar()
-            print(f"\n导入完成！")
-            print(f"总处理行: {total_rows}")
-            print(f"成功导入临时表: {success_count}")
-            print(f"成功迁移到imu_data表: {final_count}")
+            # 5. 验证导入结果
+            try:
+                verify_result = conn.execute(text("""
+                    SELECT COUNT(*) FROM imu_data 
+                    WHERE session_id = :session_id
+                """), {'session_id': session_id})
+                
+                final_count = verify_result.scalar()
+                print(f"\n导入完成！")
+                print(f"总处理行: {total_rows}")
+                print(f"成功导入临时表: {success_count}")
+                print(f"成功迁移到imu_data表: {final_count}")
+                
+                return True
+                
+            except Exception as e:
+                print(f"验证导入结果失败: {e}")
+                return False
                 
     except Exception as e:
         print(f"导入过程发生错误: {str(e)}")
-        return
+        import traceback
+        traceback.print_exc()
+        return False
 
 def main():
     """主函数，用于直接运行脚本"""
@@ -386,8 +555,10 @@ def main():
     if len(sys.argv) > 1:
         csv_file_path = sys.argv[1]
     else:
-        # 默认CSV文件路径
-        csv_file_path = "C:/Users/CJ/Documents/trae_projects/AISkiCoach/backend/app/algorithm/dataset/20250703174417-sturn.csv"
+        # 默认CSV文件路径 - 使用原始字符串处理包含特殊字符的路径
+        base_path = r"C:\Users\CJ\Documents\trae_projects\AISkiCoach\backend\app\algorithm\dataset\jason\imu"
+        default_filename = "20251030183355--雪兔道滑了两段，中间上魔毯的时候也全程开着传感器。第一段是大角度的立刃转弯，中间摔了一次，第一趟的最后有10个滚刃。第二趟大湾的大角度刻滑，没摔，最后滚刃.txt"
+        csv_file_path = os.path.join(base_path, default_filename)
         print(f"未指定CSV文件路径，使用默认路径: {csv_file_path}")
     
     import_imu_data(csv_file_path)

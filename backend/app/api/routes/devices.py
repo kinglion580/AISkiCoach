@@ -19,7 +19,7 @@ current_file_dir = os.path.dirname(os.path.abspath(__file__))
 algorithm_bin_path = os.path.join(current_file_dir, '..', '..', 'algorithm', 'bin')
 sys.path.append(algorithm_bin_path)
 
-import imu_clabration
+import imu_calibration
 
 
 router = APIRouter(prefix="", tags=["devices"])
@@ -812,7 +812,7 @@ def start_device_calibration(
                 
             # 调用校准算法
             print("开始校准")
-            success, result = imu_clabration.auto_calibrate_imu(
+            success, result = imu_calibration.auto_calibrate_imu(
                 imu_data,
                 static_window_size=100,
                 rotation_window_size=200,
