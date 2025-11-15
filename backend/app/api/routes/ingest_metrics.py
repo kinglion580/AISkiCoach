@@ -10,7 +10,7 @@ from sqlmodel import Session, select, func, and_
 
 from app.api.deps import CurrentUser, SessionDep
 from app.models import Device, SkiingMetric, SkiingSession, UserDevice
-from app.services.metrics_compute import compute_metrics_from_raw_data
+from app.algorithm.metrics_compute import compute_metrics_from_raw_data
 
 
 router = APIRouter(prefix="", tags=["ingest"])
@@ -324,7 +324,6 @@ def compute_metrics(
                 detail="session has no associated device"
             )
         device_id = str(ski_sess.device_id)
-        
         # 如果指定了覆盖，先删除已存在的 metrics 数据
         if payload.overwrite_existing:
             existing_metrics = db.exec(
