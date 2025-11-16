@@ -20,17 +20,17 @@ import os
 import pandas as pd
 
 # 尝试导入校准算法模块
-imu_clabration = None
+imu_calibration = None
 try:
     # 添加算法模块目录到系统路径
     current_file_dir = os.path.dirname(os.path.abspath(__file__))
     algorithm_bin_path = os.path.join(current_file_dir, '..', '..', 'algorithm', 'bin')
     sys.path.append(algorithm_bin_path)
-    import imu_clabration
+    import imu_calibration
 except ImportError as e:
-    print(f"⚠️  警告: 无法导入 imu_clabration 模块: {e}")
+    print(f"⚠️  警告: 无法导入 imu_calibration 模块: {e}")
     print("   校准算法功能将不可用，但API可以正常测试数据存储功能")
-    imu_clabration = None
+    imu_calibration = None
 
 
 router = APIRouter(prefix="", tags=["devices"])
@@ -784,7 +784,9 @@ def start_device_calibration(
         gyro_x.append(float(row[4]))
         gyro_y.append(float(row[5]))
         gyro_z.append(float(row[6]))
-    
+
+    print("校准数据:")
+
     # 创建校准记录（状态为in_progress）
     calibration = DeviceCalibration(
         user_id=current_user.id,
@@ -842,11 +844,11 @@ def start_device_calibration(
     error_message = None
     
     try:
-        if imu_clabration is None:
+        if imu_calibration is None:
             raise ImportError("校准算法模块不可用")
         
         print("开始校准")
-        success, result = imu_clabration.auto_calibrate_imu(
+        success, result = imu_calibration.auto_calibrate_imu(
             imu_data,
             static_window_size=100,
             rotation_window_size=200,

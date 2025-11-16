@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, Any
+from typing import Optional, Any, List
 
 from pydantic import EmailStr, Field, field_validator
 from sqlmodel import Field, Relationship, SQLModel
@@ -622,8 +622,8 @@ class DeviceCalibrationPublic(SQLModel):
     calibration_step: int
     calibration_status: str
     # 结构化校准结果
-    rotation_matrix: Optional[dict[str, Any]] = None
-    installation_angles: Optional[dict[str, Any]] = None
+    rotation_matrix: Optional[List[List[float]]] = None
+    installation_angles: Optional[List[float]] = None
     purity: Optional[Decimal] = None
     static_window_start: Optional[int] = None
     static_window_end: Optional[int] = None
