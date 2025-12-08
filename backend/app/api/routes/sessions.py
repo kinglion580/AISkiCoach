@@ -245,6 +245,34 @@ def finish_session(
     if duration_seconds < 0:
         duration_seconds = 0
 
+    # 从数据库读取该session的全部滑雪指标数据
+    try:
+        from app.models import SkiingMetric
+        metrics = session.exec(
+            select(SkiingMetric).where(SkiingMetric.session_id == session_id)
+        ).all()
+
+        if metrics:
+            # 计算session统计指标
+            max_edge_angle = max((m.edge_angle for m in metrics if m.edge_angle is not None), default=None)
+            edge_time_ratios = [m.edge_time_ratio for m in metrics if m.edge_time_ratio is not None]
+            edge_time_ratio = sum(edge_time_ratios) / len(edge_time_ratios) if edge_time_ratios else None
+            total_distance = sum((m.edge_displacement for m in metrics if m.edge_displacement is not None), Decimal('0'))
+            speeds = [m.speed_kmh for m in metrics if m.speed_kmh is not None]
+            max_speed = max(speeds) if speeds else None
+            average_speed = sum(speeds) / len(speeds) if speeds else None
+            
+            # 更新session的统计指标
+            ski_sess.max_edge_angle = max_edge_angle
+            ski_sess.edge_time_ratio = edge_time_ratio
+            ski_sess.total_distance = total_distance
+            ski_sess.max_speed = max_speed
+            ski_sess.average_speed = average_speed
+    except Exception:
+        # 如果指标计算失败，不影响会话完成状态
+        pass
+    
+
     ski_sess.end_time = end_time
     ski_sess.duration_seconds = duration_seconds
     ski_sess.session_status = "completed"
