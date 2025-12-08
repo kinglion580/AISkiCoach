@@ -19,7 +19,7 @@ import ski_compute
 SkiAnalysisSystem = ski_compute.SkiAnalysisSystem
 SkiDataProcessor = ski_compute.SkiDataProcessor
 SkiDataLoader = ski_compute.SkiDataLoader
-
+   
 
 def compute_metrics_from_raw_data(
     db: Session,
