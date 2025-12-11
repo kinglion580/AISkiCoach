@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from re import T
 from typing import List, Optional
 from sqlmodel import Session, select
 from app.models import SkiingMetric, IMUData, BarometerData
@@ -19,6 +20,76 @@ import ski_compute
 SkiAnalysisSystem = ski_compute.SkiAnalysisSystem
 SkiDataProcessor = ski_compute.SkiDataProcessor
 SkiDataLoader = ski_compute.SkiDataLoader
+
+SKI_RUNS_MAP = {
+    "广州融创": {
+        "location": {
+            "center_lat": 40.7128,
+            "center_lon": -74.0060,
+            "radius_km": 5.0  # 此雪场的地理围栏半径
+        },
+        "trails": {
+            "雪兔道": {
+                "name": "雪兔道", 
+                "drop_m": 55.0,
+                "slope_deg": 11.8,
+                "segments": [{"up_to_drop_m": 55.0, "slope_deg": 11.8}]
+            },
+            "麋鹿道": {
+                "name": "麋鹿道", 
+                "drop_m": 65.0,
+                "slope_deg": 18.0,
+                "segments": [{"up_to_drop_m": 65.0, "slope_deg": 18.0}]
+            },
+            "老虎道": {
+                "name": "老虎道", 
+                "drop_m": 65.0,
+                "slope_deg": 20.0,
+                "segments": [
+                    {"up_to_drop_m": 20.0, "slope_deg": 14.0},
+                    {"up_to_drop_m": 45.0, "slope_deg": 18.0},
+                    {"up_to_drop_m": 65.0, "slope_deg": 12.0}
+                ]
+            },
+            "未知雪道": {
+                "name": "未知", 
+                "drop_m": 0,
+                "slope_deg": 10.0,
+                "segments": []
+            }
+        }
+    },
+    "深圳华发": {
+        "location": {
+            # (示例 GPS 坐标)
+            "center_lat": 43.4885,
+            "center_lon": 126.7465,
+            "radius_km": 8.0
+        },
+        "trails": {
+            "高级道": {
+                "name": "高级道", "drop_m": 84.0,"slope_deg": 16.0,
+                "segments": [{"up_to_drop_m": 84.0, "slope_deg": 16.0}]
+            },
+            "未知雪道": {
+                "name": "未知", "drop_m": 0,"slope_deg": 10.0,
+                "segments": [{"up_to_drop_m": 1000.0, "slope_deg": 12.0}]
+            }
+        }
+    }
+}
+
+# --- 2. 定义调试标志 ---
+DEBUG_FLAGS = {
+    "is_ski_segment_debug": False,
+    "is_euler_debug": False,
+    "is_calibration_debug": False,
+    "is_turn_debug": False,
+    "is_wrestling_debug": False,
+    "is_ski_trail_debug": False,
+    "is_interp_baro_debug": False
+}
+
 
 
 def compute_metrics_from_raw_data(
@@ -75,16 +146,39 @@ def compute_metrics_from_raw_data(
 
     print(f"✓ 从数据库读取到 {len(imu_data)} 条IMU数据，{len(baro_data)} 条气压计数据")
 
+
     # 转换为DataFrame格式
     imu_df = pd.DataFrame([imu.dict() for imu in imu_data]) if imu_data else pd.DataFrame()
     baro_df = pd.DataFrame([baro.dict() for baro in baro_data]) if baro_data else pd.DataFrame()
 
     # 只读取时间戳、加速度、角速度
     imu_df = imu_df[['timestamp', 'source_id', 'acc_x', 'acc_y', 'acc_z', 'gyro_x', 'gyro_y', 'gyro_z']]
-    baro_df = baro_df[['timestamp', 'pressure']]
+    baro_df = baro_df[['timestamp', 'source_id', 'pressure']]
+
+    # 数据去重 - 基于时间戳
+    original_imu_count = len(imu_df)
+    original_baro_count = len(baro_df)
+    
+    # 按时间戳去重，保留第一条记录
+    imu_df = imu_df.drop_duplicates(subset=['timestamp'], keep='first')
+    baro_df = baro_df.drop_duplicates(subset=['timestamp'], keep='first')
+    
+    print(f"✓ IMU数据去重：从 {original_imu_count} 条记录中去除 {original_imu_count - len(imu_df)} 条重复记录，剩余 {len(imu_df)} 条记录")
+    print(f"✓ 气压数据去重：从 {original_baro_count} 条记录中去除 {original_baro_count - len(baro_df)} 条重复记录，剩余 {len(baro_df)} 条记录")
+
 
     # 只要source_id为default的IMU数据
     imu_df = imu_df[imu_df['source_id'] == 0]
+    baro_df = baro_df[baro_df['source_id'] == 0]
+    # 重置索引
+    imu_df.reset_index(drop=True, inplace=True)
+    baro_df.reset_index(drop=True, inplace=True)
+
+    print("数据库读取到的IMU数据：")
+    print(imu_df.iloc[0:5])
+
+
+    print(f"✓ 过滤后IMU数据，仅保留source_id为default的 {len(imu_df)} 条记录")
 
     # 确保所有数值列都转换为float类型
     numeric_columns = ['acc_x', 'acc_y', 'acc_z', 'gyro_x', 'gyro_y', 'gyro_z']
@@ -92,18 +186,35 @@ def compute_metrics_from_raw_data(
         if col in imu_df.columns:
             imu_df[col] = imu_df[col].astype(float)
 
-    # 加速度单位：m/s^2
-    GRAVITY = 9.80665
+    # 判断加速度单位并进行转换
+    GRAVITY = 9.80665  # 重力加速度 m/s^2
     acc_columns = ['acc_x', 'acc_y', 'acc_z']
-    if all(col in imu_df.columns for col in acc_columns):
-        for col in acc_columns:
-            imu_df[col] = imu_df[col] * GRAVITY
+    
+    # 检查是否有加速度数据
+    if all(col in imu_df.columns for col in acc_columns) and not imu_df.empty:
+        # 计算加速度向量的模
+        acc_magnitude = np.sqrt(imu_df['acc_x']**2 + imu_df['acc_y']**2 + imu_df['acc_z']**2)
+        
+        # 计算平均模值来判断单位
+        avg_magnitude = acc_magnitude.mean()
+        print(f"✓ 加速度向量平均模值: {avg_magnitude:.2f}")
+        
+        # 如果平均模值小于5，判断为g单位，需要转换为m/s^2
+        if avg_magnitude < 5:
+            print("✓ 检测到加速度单位为g，正在转换为m/s^2...")
+            for col in acc_columns:
+                imu_df[col] = imu_df[col] * GRAVITY
+            print("✓ 加速度单位转换完成 (g -> m/s^2)")
+        else:
+            print("✓ 加速度单位为m/s^2，无需转换")
+    
 
     # 确保气压计数值列也为float类型
     baro_numeric_columns = ['pressure', 'temperature']
     for col in baro_numeric_columns:
         if col in baro_df.columns:
             baro_df[col] = baro_df[col].astype(float)
+    
 
     # 时间改为时间戳格式
     imu_df['datetime'] = pd.to_datetime(imu_df['timestamp'])
@@ -115,6 +226,7 @@ def compute_metrics_from_raw_data(
 
     print(imu_df.shape)
     print(imu_df.head())
+    print(baro_df.shape)
     print(baro_df.head())
 
     if not imu_df.empty:
@@ -130,10 +242,9 @@ def compute_metrics_from_raw_data(
         processor = SkiDataProcessor()
 
         # 估算采样频率（如果数据中包含频率信息）
-        imu_fs = 100  # 默认IMU采样频率
-        baro_fs = 1  # 默认气压计采样频率
-
-        print(f"✓ 估算采样频率: IMU {imu_fs:.1f}Hz, 气压计 {baro_fs:.1f}Hz")
+        imu_fs = processor.calculate_frequency(imu_df)
+        baro_fs = processor.calculate_frequency(baro_df)
+        print(f"✓ 估算采样频率: IMU {imu_fs:.2f}Hz, 气压计 {baro_fs:.2f}Hz")
 
         # 初始化滑雪分析系统
         analysis_system = SkiAnalysisSystem(
@@ -143,7 +254,10 @@ def compute_metrics_from_raw_data(
             imu_fs=imu_fs,
             baro_fs=baro_fs,
             gps_fs=1,
-            processor=processor
+            processor=processor,
+            debug_flags=DEBUG_FLAGS,
+            ski_resort='深圳华发',
+            runs_map=SKI_RUNS_MAP,
         )
 
         print(f"✓ SkiAnalysisSystem初始化完成")
