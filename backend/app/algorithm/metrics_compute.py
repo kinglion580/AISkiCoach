@@ -160,12 +160,11 @@ def compute_metrics_from_raw_data(
     original_baro_count = len(baro_df)
     
     # 按时间戳去重，保留第一条记录
-    imu_df = imu_df.drop_duplicates(subset=['timestamp'], keep='first')
-    baro_df = baro_df.drop_duplicates(subset=['timestamp'], keep='first')
+    imu_df = imu_df.drop_duplicates(subset=['timestamp', 'source_id'], keep='first')
+    baro_df = baro_df.drop_duplicates(subset=['timestamp', 'source_id'], keep='first')
     
     print(f"✓ IMU数据去重：从 {original_imu_count} 条记录中去除 {original_imu_count - len(imu_df)} 条重复记录，剩余 {len(imu_df)} 条记录")
     print(f"✓ 气压数据去重：从 {original_baro_count} 条记录中去除 {original_baro_count - len(baro_df)} 条重复记录，剩余 {len(baro_df)} 条记录")
-
 
     # 只要source_id为default的IMU数据
     imu_df = imu_df[imu_df['source_id'] == 0]
