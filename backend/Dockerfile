@@ -3,9 +3,14 @@ FROM python:3.10
 ENV PYTHONUNBUFFERED=1
 # 增加超时时间和使用国内镜像
 ENV UV_HTTP_TIMEOUT=300
-ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
-ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
-ENV PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+# ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
+# ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
+# ENV PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+
+
+ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_TRUSTED_HOST=mirrors.aliyun.com
 
 WORKDIR /app/
 
@@ -26,12 +31,19 @@ ENV UV_COMPILE_BYTECODE=1
 # Ref: https://docs.astral.sh/uv/guides/integration/docker/#caching
 ENV UV_LINK_MODE=copy
 
+COPY pyproject.toml ./
+RUN uv lock --index-url https://mirrors.aliyun.com/pypi/simple/
+
+
 # Install dependencies
 # Ref: https://docs.astral.sh/uv/guides/integration/docker/#intermediate-layers
+#RUN --mount=type=cache,target=/root/.cache/uv \
+#    --mount=type=bind,source=uv.lock,target=uv.lock \
+#    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+#    uv sync --frozen --no-install-project
+
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=uv.lock,target=uv.lock \
-    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --no-install-project
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml
 
 ENV PYTHONPATH=/app
 
