@@ -14,3 +14,6 @@ python app/initial_data.py
 
 # Initialize TimescaleDB configuration
 python app/init_timescale.py
+
+# 生产环境优化：压缩、保留策略、连续聚合
+python app/optimize_timescale.py

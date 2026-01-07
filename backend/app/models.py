@@ -1,388 +1,91 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, Any, List
+from typing import Any, List, Optional
 
-from pydantic import EmailStr, Field, field_validator
-from sqlmodel import Field, Relationship, SQLModel
-from sqlalchemy import Column, JSON
+from pydantic import field_validator
+from sqlalchemy import Column
 from sqlalchemy.dialects.postgresql import JSON as PostgresJSON
+from sqlmodel import Field, Relationship, SQLModel
+
+# =============================================================================
+# Backward Compatibility Imports
+# Import from domains for clean architecture while maintaining backward compatibility
+# =============================================================================
+# Import auth domain models and schemas
+from app.domains.auth.models import (
+    User as DomainUser,
+)
+from app.domains.auth.models import (
+    UserAuth as DomainUserAuth,
+)
+from app.domains.auth.models import (
+    UserSession as DomainUserSession,
+)
+from app.domains.auth.schemas import (
+    LoginResponse as DomainLoginResponse,
+)
+from app.domains.auth.schemas import (
+    SendCodeRequest as DomainSendCodeRequest,
+)
+from app.domains.auth.schemas import (
+    SendCodeResponse as DomainSendCodeResponse,
+)
+from app.domains.auth.schemas import (
+    Token as DomainToken,
+)
+from app.domains.auth.schemas import (
+    TokenPayload as DomainTokenPayload,
+)
+from app.domains.auth.schemas import (
+    UserCreate as DomainUserCreate,
+)
+from app.domains.auth.schemas import (
+    UserPublic as DomainUserPublic,
+)
+from app.domains.auth.schemas import (
+    UserSessionPublic as DomainUserSessionPublic,
+)
+from app.domains.auth.schemas import (
+    UsersPublic as DomainUsersPublic,
+)
+from app.domains.auth.schemas import (
+    UserUpdate as DomainUserUpdate,
+)
+from app.domains.auth.schemas import (
+    UserUpdateMe as DomainUserUpdateMe,
+)
+from app.domains.auth.schemas import (
+    VerificationCodeInfo as DomainVerificationCodeInfo,
+)
+from app.domains.auth.schemas import (
+    VerificationCodeLoginRequest as DomainVerificationCodeLoginRequest,
+)
+
+# Expose domain models as if they're defined here (backward compatibility)
+User = DomainUser
+UserAuth = DomainUserAuth
+UserSession = DomainUserSession
+UserCreate = DomainUserCreate
+UserUpdate = DomainUserUpdate
+UserUpdateMe = DomainUserUpdateMe
+UserPublic = DomainUserPublic
+UsersPublic = DomainUsersPublic
+SendCodeRequest = DomainSendCodeRequest
+SendCodeResponse = DomainSendCodeResponse
+VerificationCodeLoginRequest = DomainVerificationCodeLoginRequest
+LoginResponse = DomainLoginResponse
+Token = DomainToken
+TokenPayload = DomainTokenPayload
+UserSessionPublic = DomainUserSessionPublic
+VerificationCodeInfo = DomainVerificationCodeInfo
 
 
 # =============================================================================
 # 滑雪应用用户模型 (Skiing App User Models)
 # =============================================================================
-
-# 滑雪用户基础属性
-class UserBase(SQLModel):
-    """滑雪用户基础信息模型"""
-    phone: str = Field(unique=True, index=True, max_length=20, description="手机号")
-    nickname: Optional[str] = Field(default=None, max_length=50, description="昵称")
-    avatar_url: Optional[str] = Field(default=None, description="头像URL")
-    preferred_foot: Optional[str] = Field(
-        default=None, 
-        description="惯用脚设置：goofy(右脚在前) 或 regular(左脚在前)"
-    )
-    level: str = Field(default="Dexter", max_length=20, description="用户滑雪等级")
-    level_description: Optional[str] = Field(default=None, description="等级描述")
-    total_skiing_days: int = Field(default=0, ge=0, description="总滑雪天数")
-    total_skiing_hours: Decimal = Field(
-        default=Decimal("0.0"), 
-        ge=0, 
-        max_digits=10, 
-        decimal_places=2, 
-        description="总滑雪时长(小时)"
-    )
-    total_skiing_sessions: int = Field(default=0, ge=0, description="总滑雪次数")
-    average_speed: Decimal = Field(
-        default=Decimal("0.0"), 
-        ge=0, 
-        max_digits=5, 
-        decimal_places=2, 
-        description="平均速度(km/h)"
-    )
-    is_active: bool = Field(default=True, description="账户是否激活")
-
-    @field_validator('preferred_foot')
-    @classmethod
-    def validate_preferred_foot(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ['goofy', 'regular']:
-            raise ValueError('preferred_foot must be either "goofy" or "regular"')
-        return v
-
-    @field_validator('phone')
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        # 简单的手机号格式验证
-        clean_phone = v.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-        if not clean_phone.isdigit():
-            raise ValueError('Invalid phone number format')
-        return v
-
-
-# 滑雪用户创建模型（通过手机验证码注册，无需密码）
-class UserCreate(SQLModel):
-    """创建滑雪用户时使用的模型"""
-    phone: str = Field(max_length=20, description="手机号")
-    nickname: Optional[str] = Field(default=None, max_length=50, description="昵称")
-    preferred_foot: Optional[str] = Field(default=None, description="惯用脚设置")
-
-    @field_validator('preferred_foot')
-    @classmethod
-    def validate_preferred_foot(cls, v: Optional[str]) -> Optional[str]:
-        if v is not None and v not in ['goofy', 'regular']:
-            raise ValueError('preferred_foot must be either "goofy" or "regular"')
-        return v
-
-    @field_validator('phone')
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        # 简单的手机号格式验证
-        clean_phone = v.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-        if not clean_phone.isdigit():
-            raise ValueError('Invalid phone number format')
-        return v
-
-
-# 滑雪用户更新模型
-class UserUpdate(SQLModel):
-    """更新滑雪用户信息的模型"""
-    nickname: Optional[str] = Field(default=None, max_length=50)
-    avatar_url: Optional[str] = Field(default=None)
-    preferred_foot: Optional[str] = Field(default=None)
-    level: Optional[str] = Field(default=None, max_length=20)
-    level_description: Optional[str] = Field(default=None)
-
-
-class UserUpdateMe(SQLModel):
-    """用户自行更新个人信息"""
-    nickname: Optional[str] = Field(default=None, max_length=50)
-    avatar_url: Optional[str] = Field(default=None)
-    preferred_foot: Optional[str] = Field(default=None)
-
-
-# 手机验证码相关模型
-class VerificationCodeRequest(SQLModel):
-    """验证码请求模型"""
-    phone: str = Field(max_length=20, description="手机号")
-
-    @field_validator('phone')
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        # 简单的手机号格式验证
-        clean_phone = v.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-        if not clean_phone.isdigit():
-            raise ValueError('Invalid phone number format')
-        return v
-
-
-class VerificationCodeVerify(SQLModel):
-    """验证码验证模型"""
-    phone: str = Field(max_length=20, description="手机号")
-    code: str = Field(max_length=6, description="验证码")
-
-    @field_validator('phone')
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        # 简单的手机号格式验证
-        clean_phone = v.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-        if not clean_phone.isdigit():
-            raise ValueError('Invalid phone number format')
-        return v
-
-
-# 滑雪用户数据库模型
-class User(UserBase, table=True):
-    """滑雪用户数据库表模型"""
-    __tablename__ = "users"
-    
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: Optional[datetime] = Field(default=None)
-    last_login_at: Optional[datetime] = Field(default=None)
-    
-    # 滑雪应用关系
-    auth_records: list["UserAuth"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    sessions: list["UserSession"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    user_devices: list["UserDevice"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    device_calibrations: list["DeviceCalibration"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    skiing_sessions: list["SkiingSession"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    imu_data: list["IMUData"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    gps_data: list["GPSData"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    barometer_data: list["BarometerData"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    skiing_metrics: list["SkiingMetric"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    ai_analyses: list["AIAnalysis"] = Relationship(
-        back_populates="user", 
-        cascade_delete=True
-    )
-    
-    # 保持与现有架构的兼容性（临时保留Item关系）
-    items: list["Item"] = Relationship(back_populates="owner", cascade_delete=True)
-
-
-# 滑雪用户公开信息模型
-class UserPublic(UserBase):
-    """通过API返回的滑雪用户公开信息"""
-    id: uuid.UUID
-    created_at: datetime
-    last_login_at: Optional[datetime] = None
-
-
-class UsersPublic(SQLModel):
-    """滑雪用户列表响应"""
-    data: list[UserPublic]
-    count: int
-
-
-# =============================================================================
-# 用户认证和会话管理模型 (User Authentication & Session Models)
-# =============================================================================
-
-# 用户认证基础模型
-class UserAuthBase(SQLModel):
-    """用户认证基础模型"""
-    phone: str = Field(max_length=20, description="手机号")
-    verification_code: Optional[str] = Field(default=None, max_length=6, description="验证码")
-    code_attempts: int = Field(default=0, ge=0, description="验证码尝试次数")
-    is_verified: bool = Field(default=False, description="是否已验证")
-
-
-class UserAuthCreate(SQLModel):
-    """创建用户认证记录"""
-    phone: str = Field(max_length=20, description="手机号")
-    verification_code: str = Field(max_length=6, description="验证码")
-
-    @field_validator('phone')
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        clean_phone = v.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-        if not clean_phone.isdigit():
-            raise ValueError('Invalid phone number format')
-        return v
-
-
-class UserAuth(UserAuthBase, table=True):
-    """用户认证数据库表"""
-    __tablename__ = "user_auth"
-    
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
-    code_expires_at: Optional[datetime] = Field(default=None, description="验证码过期时间")
-    last_attempt_at: Optional[datetime] = Field(default=None, description="最后尝试时间")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: Optional[datetime] = Field(default=None)
-
-    # 关系
-    user: User = Relationship(back_populates="auth_records")
-
-
-# 用户会话基础模型
-class UserSessionBase(SQLModel):
-    """用户会话基础模型"""
-    session_token: str = Field(unique=True, max_length=255, description="会话令牌")
-    ip_address: Optional[str] = Field(default=None, max_length=45, description="IP地址")
-
-
-class UserSessionCreate(SQLModel):
-    """创建用户会话"""
-    session_token: str = Field(unique=True, max_length=255, description="会话令牌")
-    ip_address: Optional[str] = Field(default=None, max_length=45, description="IP地址")
-    device_info: Optional[dict[str, Any]] = Field(default=None, description="设备信息")
-    expires_at: datetime = Field(description="过期时间")
-
-
-class UserSession(UserSessionBase, table=True):
-    """用户会话数据库表"""
-    __tablename__ = "user_sessions"
-    
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
-    expires_at: datetime = Field(description="过期时间")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_activity_at: datetime = Field(default_factory=datetime.utcnow, description="最后活动时间")
-    
-    # 设备信息字段（从device_info dict拆分）
-    device_type: Optional[str] = Field(default=None, max_length=50, description="设备类型")
-    device_model: Optional[str] = Field(default=None, max_length=100, description="设备型号")
-    os_type: Optional[str] = Field(default=None, max_length=20, description="操作系统类型")
-    os_version: Optional[str] = Field(default=None, max_length=50, description="操作系统版本")
-    app_version: Optional[str] = Field(default=None, max_length=20, description="应用版本")
-    user_agent: Optional[str] = Field(default=None, max_length=500, description="用户代理")
-    
-    # 扩展设备信息（JSON格式，符合文档要求）
-    device_info: Optional[dict[str, Any]] = Field(
-        default=None, 
-        sa_column=Column(PostgresJSON), 
-        description="扩展设备信息JSON"
-    )
-
-    # 关系
-    user: User = Relationship(back_populates="sessions")
-
-
-class UserSessionPublic(UserSessionBase):
-    """用户会话公开信息"""
-    id: uuid.UUID
-    user_id: uuid.UUID
-    expires_at: datetime
-    created_at: datetime
-    last_activity_at: datetime
-    device_info: Optional[dict[str, Any]] = Field(default=None, description="设备信息")
-
-
-# 认证响应模型
-class AuthResponse(SQLModel):
-    """认证响应模型"""
-    user: UserPublic
-    token: "Token"
-    session_info: dict[str, Any] = Field(description="会话信息")
-
-
-class LoginRequest(SQLModel):
-    """登录请求模型"""
-    phone: str = Field(max_length=20, description="手机号")
-    verification_code: str = Field(max_length=6, description="验证码")
-
-    @field_validator('phone')
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        clean_phone = v.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
-        if not clean_phone.isdigit():
-            raise ValueError('Invalid phone number format')
-        return v
-
-
-# =============================================================================
-# 验证码相关模型 (Verification Code Models)
-# =============================================================================
-
-class SendCodeRequest(SQLModel):
-    """发送验证码请求"""
-    phone: str = Field(max_length=20, description="手机号")
-
-    @field_validator('phone')
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        import re
-        # 中国手机号格式验证
-        pattern = r'^1[3-9]\d{9}$'
-        if not re.match(pattern, v):
-            raise ValueError('Invalid phone number format')
-        return v
-
-
-class SendCodeResponse(SQLModel):
-    """发送验证码响应"""
-    success: bool = Field(description="是否发送成功")
-    message: str = Field(description="响应消息")
-    expires_in: int = Field(description="验证码有效期（秒）")
-
-
-class VerificationCodeLoginRequest(SQLModel):
-    """验证码登录请求"""
-    phone: str = Field(max_length=20, description="手机号")
-    verification_code: str = Field(max_length=6, description="验证码")
-
-    @field_validator('phone')
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        import re
-        pattern = r'^1[3-9]\d{9}$'
-        if not re.match(pattern, v):
-            raise ValueError('Invalid phone number format')
-        return v
-
-    @field_validator('verification_code')
-    @classmethod
-    def validate_verification_code(cls, v: str) -> str:
-        if not v.isdigit() or len(v) != 6:
-            raise ValueError('Verification code must be 6 digits')
-        return v
-
-
-class LoginResponse(SQLModel):
-    """登录响应"""
-    access_token: str = Field(description="访问令牌")
-    token_type: str = Field(default="bearer", description="令牌类型")
-    expires_in: int = Field(description="令牌过期时间（秒）")
-    user: UserPublic = Field(description="用户信息")
-
-
-class VerificationCodeInfo(SQLModel):
-    """验证码信息（开发环境使用）"""
-    phone: str = Field(description="手机号")
-    code: str = Field(description="验证码")
-    created_at: str = Field(description="创建时间")
-    expires_at: str = Field(description="过期时间")
-    attempts: int = Field(description="尝试次数")
-
+# Note: All auth-related models (User, UserAuth, UserSession) and schemas
+# have been moved to app/domains/auth/ following DDD architecture
 
 # =============================================================================
 # 设备管理模型 (Device Management Models)
@@ -439,7 +142,7 @@ class DeviceUpdate(SQLModel):
 class Device(DeviceBase, table=True):
     """HeyGo设备数据库表"""
     __tablename__ = "devices"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     last_seen_at: Optional[datetime] = Field(default=None, description="最后在线时间")
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -447,11 +150,11 @@ class Device(DeviceBase, table=True):
 
     # 关系
     user_devices: list["UserDevice"] = Relationship(
-        back_populates="device", 
+        back_populates="device",
         cascade_delete=True
     )
     calibrations: list["DeviceCalibration"] = Relationship(
-        back_populates="device", 
+        back_populates="device",
         cascade_delete=True
     )
 
@@ -492,7 +195,7 @@ class UserDeviceCreate(SQLModel):
 class UserDevice(UserDeviceBase, table=True):
     """用户设备关联表"""
     __tablename__ = "user_devices"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
     device_id: uuid.UUID = Field(foreign_key="devices.id", index=True)
@@ -529,13 +232,13 @@ class DeviceCalibrationCreate(SQLModel):
 class DeviceCalibration(DeviceCalibrationBase, table=True):
     """设备校准数据表"""
     __tablename__ = "device_calibrations"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
     device_id: uuid.UUID = Field(foreign_key="devices.id", index=True)
     completed_at: Optional[datetime] = Field(default=None, description="完成时间")
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    
+
     # 校准数据字段（用于存储偏移量等基础数据）
     # 加速度计偏移
     acc_offset_x: Optional[Decimal] = Field(default=None, max_digits=10, decimal_places=6, description="加速度计X轴偏移")
@@ -551,7 +254,7 @@ class DeviceCalibration(DeviceCalibrationBase, table=True):
     mag_offset_z: Optional[Decimal] = Field(default=None, max_digits=10, decimal_places=6, description="磁力计Z轴偏移")
     # 校准精度
     calibration_accuracy: Optional[Decimal] = Field(default=None, max_digits=5, decimal_places=2, description="校准精度评分")
-    
+
     # 新增：结构化校准结果字段
     # 旋转矩阵（3x3矩阵，存储为JSON）
     rotation_matrix: Optional[dict[str, Any]] = Field(
@@ -595,7 +298,7 @@ class DeviceCalibration(DeviceCalibrationBase, table=True):
 class DeviceCalibrationSample(SQLModel, table=True):
     """设备校准原始数据样本表"""
     __tablename__ = "device_calibration_samples"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     calibration_id: uuid.UUID = Field(foreign_key="device_calibrations.id", index=True, description="校准记录ID")
     sample_index: int = Field(index=True, description="样本在序列中的索引")
@@ -609,7 +312,7 @@ class DeviceCalibrationSample(SQLModel, table=True):
     gyro_y: Decimal = Field(max_digits=10, decimal_places=6, description="陀螺仪Y (rad/s)")
     gyro_z: Decimal = Field(max_digits=10, decimal_places=6, description="陀螺仪Z (rad/s)")
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    
+
     # 关系
     calibration: "DeviceCalibration" = Relationship(back_populates="samples")
 
@@ -692,7 +395,7 @@ class SkiingSessionUpdate(SQLModel):
 class SkiingSession(SkiingSessionBase, table=True):
     """滑雪会话数据库表"""
     __tablename__ = "skiing_sessions"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
     device_id: Optional[uuid.UUID] = Field(default=None, foreign_key="devices.id", index=True)
@@ -700,39 +403,39 @@ class SkiingSession(SkiingSessionBase, table=True):
     end_time: Optional[datetime] = Field(default=None, description="结束时间")
     duration_seconds: Optional[int] = Field(default=None, ge=0, description="滑行时长(秒)")
     max_edge_angle: Optional[Decimal] = Field(
-        default=None, 
-        ge=0, 
-        le=90, 
-        max_digits=5, 
-        decimal_places=2, 
+        default=None,
+        ge=0,
+        le=90,
+        max_digits=5,
+        decimal_places=2,
         description="最大立刃角度"
     )
     edge_time_ratio: Optional[Decimal] = Field(
-        default=None, 
-        ge=0, 
-        max_digits=5, 
-        decimal_places=2, 
+        default=None,
+        ge=0,
+        max_digits=5,
+        decimal_places=2,
         description="立刃时间占比"
     )
     total_distance: Optional[Decimal] = Field(
-        default=None, 
-        ge=0, 
-        max_digits=10, 
-        decimal_places=2, 
+        default=None,
+        ge=0,
+        max_digits=10,
+        decimal_places=2,
         description="总距离(米)"
     )
     max_speed: Optional[Decimal] = Field(
-        default=None, 
-        ge=0, 
-        max_digits=5, 
-        decimal_places=2, 
+        default=None,
+        ge=0,
+        max_digits=5,
+        decimal_places=2,
         description="最大速度(km/h)"
     )
     average_speed: Optional[Decimal] = Field(
-        default=None, 
-        ge=0, 
-        max_digits=5, 
-        decimal_places=2, 
+        default=None,
+        ge=0,
+        max_digits=5,
+        decimal_places=2,
         description="平均速度(km/h)"
     )
     # 会话元数据字段（从metadata dict拆分）
@@ -742,14 +445,14 @@ class SkiingSession(SkiingSessionBase, table=True):
     slope_condition: Optional[str] = Field(default=None, max_length=20, description="坡面状况")
     temperature: Optional[Decimal] = Field(default=None, max_digits=5, decimal_places=2, description="温度(°C)")
     wind_speed: Optional[Decimal] = Field(default=None, max_digits=5, decimal_places=2, description="风速(m/s)")
-    
+
     # 扩展会话元数据（JSON格式，符合文档要求）
     session_metadata: Optional[dict[str, Any]] = Field(
-        default=None, 
-        sa_column=Column(PostgresJSON), 
+        default=None,
+        sa_column=Column(PostgresJSON),
         description="扩展会话元数据JSON"
     )
-    
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: Optional[datetime] = Field(default=None)
 
@@ -814,7 +517,7 @@ class IMUDataCreate(SQLModel):
 class IMUData(IMUDataBase, table=True):
     """IMU传感器数据表（时序数据，使用TimescaleDB优化）"""
     __tablename__ = "imu_data"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
     device_id: uuid.UUID = Field(foreign_key="devices.id", index=True)
@@ -834,23 +537,23 @@ class GPSDataBase(SQLModel):
     latitude: Decimal = Field(max_digits=10, decimal_places=8, description="纬度")
     longitude: Decimal = Field(max_digits=11, decimal_places=8, description="经度")
     altitude: Optional[Decimal] = Field(
-        default=None, 
-        max_digits=8, 
-        decimal_places=2, 
+        default=None,
+        max_digits=8,
+        decimal_places=2,
         description="海拔(m)"
     )
     speed: Optional[Decimal] = Field(
-        default=None, 
-        ge=0, 
-        max_digits=6, 
-        decimal_places=2, 
+        default=None,
+        ge=0,
+        max_digits=6,
+        decimal_places=2,
         description="速度(m/s)"
     )
     accuracy: Optional[Decimal] = Field(
-        default=None, 
-        ge=0, 
-        max_digits=6, 
-        decimal_places=2, 
+        default=None,
+        ge=0,
+        max_digits=6,
+        decimal_places=2,
         description="精度(m)"
     )
 
@@ -864,7 +567,7 @@ class GPSDataCreate(SQLModel):
 class GPSData(GPSDataBase, table=True):
     """GPS位置数据表（时序数据，使用TimescaleDB优化）"""
     __tablename__ = "gps_data"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
     device_id: uuid.UUID = Field(foreign_key="devices.id", index=True)
@@ -883,9 +586,9 @@ class BarometerDataBase(SQLModel):
     source_id: int = Field(description="数据源模块ID")
     pressure: Decimal = Field(max_digits=10, decimal_places=2, description="气压值")
     temperature: Optional[Decimal] = Field(
-        default=None, 
-        max_digits=5, 
-        decimal_places=2, 
+        default=None,
+        max_digits=5,
+        decimal_places=2,
         description="温度(°C)"
     )
 
@@ -899,7 +602,7 @@ class BarometerDataCreate(SQLModel):
 class BarometerData(BarometerDataBase, table=True):
     """气压计传感器数据表（时序数据，使用TimescaleDB优化）"""
     __tablename__ = "barometer_data"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
     device_id: uuid.UUID = Field(foreign_key="devices.id", index=True)
@@ -944,7 +647,7 @@ class SkiingMetricCreate(SQLModel):
 class SkiingMetric(SkiingMetricBase, table=True):
     """滑雪指标数据表（时序数据，使用TimescaleDB优化）"""
     __tablename__ = "skiing_metrics"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
     device_id: uuid.UUID = Field(foreign_key="devices.id", index=True)
@@ -969,11 +672,11 @@ class AIAnalysisBase(SQLModel):
     advanced_suggestions: Optional[str] = Field(default=None, description="进阶建议")
     technical_insights: Optional[str] = Field(default=None, description="技术洞察")
     confidence_score: Optional[Decimal] = Field(
-        default=None, 
-        ge=0, 
-        le=1, 
-        max_digits=3, 
-        decimal_places=2, 
+        default=None,
+        ge=0,
+        le=1,
+        max_digits=3,
+        decimal_places=2,
         description="置信度分数"
     )
 
@@ -1003,12 +706,12 @@ class AIAnalysisUpdate(SQLModel):
 class AIAnalysis(AIAnalysisBase, table=True):
     """AI分析结果数据库表"""
     __tablename__ = "ai_analyses"
-    
+
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     session_id: uuid.UUID = Field(foreign_key="skiing_sessions.id", index=True)
     user_id: uuid.UUID = Field(foreign_key="users.id", index=True)
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    
+
     # 核心分析指标字段（从analysis_data dict拆分）
     avg_edge_angle: Optional[Decimal] = Field(default=None, max_digits=5, decimal_places=2, description="平均立刃角度")
     turn_count: Optional[int] = Field(default=None, ge=0, description="转弯次数")
@@ -1017,11 +720,11 @@ class AIAnalysis(AIAnalysisBase, table=True):
     speed_consistency: Optional[Decimal] = Field(default=None, max_digits=3, decimal_places=1, description="速度一致性")
     edge_control_score: Optional[Decimal] = Field(default=None, max_digits=3, decimal_places=1, description="立刃控制评分")
     turn_quality_score: Optional[Decimal] = Field(default=None, max_digits=3, decimal_places=1, description="转弯质量评分")
-    
+
     # 详细分析数据（JSON格式，符合文档要求）
     analysis_data: Optional[dict[str, Any]] = Field(
-        default=None, 
-        sa_column=Column(PostgresJSON), 
+        default=None,
+        sa_column=Column(PostgresJSON),
         description="详细分析数据JSON"
     )
 
@@ -1095,12 +798,4 @@ class Message(SQLModel):
     message: str
 
 
-class Token(SQLModel):
-    """认证令牌模型"""
-    access_token: str
-    token_type: str = "bearer"
-
-
-class TokenPayload(SQLModel):
-    """JWT令牌负载"""
-    sub: str | None = None
+# Note: Token and TokenPayload are now imported from domains.auth.schemas

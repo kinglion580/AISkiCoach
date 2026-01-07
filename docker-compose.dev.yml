@@ -1,0 +1,148 @@
+# =============================================================================
+# Docker Compose 开发环境覆盖配置
+# =============================================================================
+# 使用方法：
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# 或设置环境变量：
+#   export COMPOSE_FILE=docker-compose.yml:docker-compose.dev.yml
+#   docker-compose up -d
+#
+# 特点：
+# - 使用 Dockerfile.dev（阿里云镜像源）
+# - 挂载代码目录实现热重载
+# - 不需要重新构建镜像
+# - 暴露所有端口方便调试
+# =============================================================================
+
+services:
+  # =============================================================================
+  # 开发环境数据库配置
+  # =============================================================================
+  db:
+    ports:
+      - "5432:5432"  # 暴露端口，方便本地连接
+    environment:
+      - POSTGRES_DB=app_dev
+    volumes:
+      - app-db-data-dev:/var/lib/postgresql/data/pgdata
+
+  # =============================================================================
+  # 开发环境 Redis 配置
+  # =============================================================================
+  redis:
+    ports:
+      - "6379:6379"  # 暴露端口
+
+  # =============================================================================
+  # 开发环境后端配置（使用 Dockerfile.dev）
+  # =============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev  # 使用开发环境专用 Dockerfile
+    volumes:
+      # ========================================
+      # 挂载源代码（热重载）
+      # ========================================
+      # 应用代码
+      - ./backend/app:/app/app
+      # 脚本
+      - ./backend/scripts:/app/scripts
+      # 配置文件
+      - ./backend/gunicorn_conf.py:/app/gunicorn_conf.py
+      - ./backend/alembic.ini:/app/alembic.ini
+      # pyproject.toml 和 uv.lock（如果需要安装新依赖）
+      - ./backend/pyproject.toml:/app/pyproject.toml
+      - ./backend/uv.lock:/app/uv.lock
+      # 静态文件（如果有）
+      - ./backend/static:/app/static
+
+      # ========================================
+      # 数据持久化（可选）
+      # ========================================
+      # 如果想保留 IPython 历史、日志等
+      # - ./backend/.dev-data:/app/.dev-data
+
+    environment:
+      # 开发环境变量
+      - ENVIRONMENT=local
+
+      # 数据库配置（确保连接到 Docker 内的服务）
+      - POSTGRES_SERVER=db
+      - POSTGRES_DB=app_dev
+      - REDIS_URL=redis://redis:6379/0
+
+      # 性能配置
+      - DB_ECHO=True
+      - GUNICORN_LOG_LEVEL=debug
+      - GUNICORN_WORKERS=2
+      - ENABLE_QUERY_LOGGING=True
+
+    ports:
+      - "8000:8000"  # 暴露后端端口
+
+    # 开发环境启动命令（带热重载）
+    command: >
+      bash -c "
+      echo '开发环境启动...' &&
+      python app/backend_pre_start.py &&
+      alembic upgrade head &&
+      python app/initial_data.py &&
+      python app/init_timescale.py &&
+      echo '启动 Gunicorn (热重载模式)...' &&
+      /app/.venv/bin/gunicorn app.main:app -c gunicorn_conf.py --reload --log-level debug
+      "
+
+    # 开发环境不需要 healthcheck（加快启动速度）
+    healthcheck:
+      disable: true
+
+  # =============================================================================
+  # 开发环境前端配置
+  # =============================================================================
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - NODE_ENV=development
+    volumes:
+      # 热重载
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+    environment:
+      - NODE_ENV=development
+
+  # =============================================================================
+  # 开发环境启用 Adminer（数据库管理工具）
+  # =============================================================================
+  adminer:
+    restart: always
+    ports:
+      - "8080:8080"  # 确保暴露端口
+
+# =============================================================================
+# 开发环境专用 Volumes
+# =============================================================================
+volumes:
+  app-db-data-dev:
+
+# =============================================================================
+# 使用说明
+# =============================================================================
+# 1. 首次启动：
+#    docker-compose -f docker-compose.yml -f docker-compose.dev.yml build
+#    docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# 2. 日常开发（代码修改自动重载，无需重新构建）：
+#    docker-compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# 3. 安装新依赖后需要重新构建：
+#    docker-compose -f docker-compose.yml -f docker-compose.dev.yml build backend
+#
+# 4. 查看日志：
+#    docker-compose -f docker-compose.yml -f docker-compose.dev.yml logs -f backend
+#
+# 5. 进入容器调试：
+#    docker-compose -f docker-compose.yml -f docker-compose.dev.yml exec backend bash
+# =============================================================================

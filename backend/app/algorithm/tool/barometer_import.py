@@ -23,9 +23,153 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:changethis@local
 engine = create_engine(DATABASE_URL)
 
 # 固定的外键数据（用于测试）
-TEST_USER_ID = uuid.UUID("10000000-0000-0000-0000-000000000001")
-TEST_DEVICE_ID = uuid.UUID("10000000-0000-0000-0000-000000000002")
-TEST_SESSION_ID = uuid.UUID("10000000-0000-0000-0000-000000000003")
+TEST_USER_ID = uuid.UUID("47db736f-b22f-4998-9045-735c7579aaae")
+TEST_DEVICE_ID = uuid.UUID("712ceb39-eb4a-44c0-b877-d0e6ac1c8099")
+TEST_SESSION_ID = uuid.UUID("82ed5810-409e-4a90-b7d0-537e18d80e34")
+
+def ensure_required_records(conn, session_id=None, device_id=None, user_id=None):
+    """确保必要的外键记录存在"""
+    # 使用固定ID
+    if user_id is None:
+        user_id = TEST_USER_ID
+    if device_id is None:
+        device_id = TEST_DEVICE_ID
+    if session_id is None:
+        session_id = TEST_SESSION_ID
+    
+    # 每个表操作使用独立事务，避免一个失败影响其他操作
+    # 1. 创建用户记录（如果表存在）
+    try:
+        with engine.begin() as user_conn:
+            # 检查users表是否存在
+            user_table_exists = user_conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE  table_schema = 'public'
+                    AND    table_name   = 'users'
+                )
+            """)).scalar()
+            
+            if user_table_exists:
+                # 检查用户记录是否已存在
+                user_exists = user_conn.execute(text("""
+                    SELECT EXISTS (SELECT 1 FROM users WHERE id = :id)
+                """), {'id': user_id}).scalar()
+                
+                if not user_exists:
+                    # 插入用户记录 - 使用phone字段，没有email和password_hash
+                    user_conn.execute(text("""
+                        INSERT INTO users (id, created_at, updated_at, phone, nickname, is_active, level)
+                        VALUES (:id, NOW(), NOW(), :phone, :nickname, true, 'Dexter')
+                    """), {
+                        'id': user_id,
+                        'phone': f'1380000{datetime.now().strftime("%H%M%S")}',
+                        'nickname': '临时导入用户'
+                    })
+                    print(f"创建用户记录: {user_id}")
+                else:
+                    print(f"用户记录已存在，直接使用: {user_id}")
+    except Exception as e:
+        print(f"创建用户记录失败: {e}")
+    
+    # 2. 创建设备记录（如果表存在）
+    try:
+        with engine.begin() as device_conn:
+            # 检查devices表是否存在
+            device_table_exists = device_conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE  table_schema = 'public'
+                    AND    table_name   = 'devices'
+                )
+            """)).scalar()
+            
+            if device_table_exists:
+                # 检查设备记录是否已存在
+                device_exists = device_conn.execute(text("""
+                    SELECT EXISTS (SELECT 1 FROM devices WHERE id = :id)
+                """), {'id': device_id}).scalar()
+                
+                if not device_exists:
+                    # 插入设备记录 - 使用device_name和device_id字段，没有user_id（通过user_devices表关联）
+                    device_conn.execute(text("""
+                        INSERT INTO devices (id, created_at, updated_at, device_id, device_name, device_type, connection_status)
+                        VALUES (:id, NOW(), NOW(), :device_id, :device_name, :device_type, 'connected')
+                    """), {
+                        'id': device_id,
+                        'device_id': f'BARO-{str(device_id)[:8].upper()}',
+                        'device_name': '气压计导入设备',
+                        'device_type': 'HeyGo A1'
+                    })
+                    print(f"创建设备记录: {device_id}")
+                else:
+                    print(f"设备记录已存在，直接使用: {device_id}")
+                
+                # 创建用户设备关联记录
+                try:
+                    # 检查是否已存在关联
+                    exists = device_conn.execute(text("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM user_devices 
+                            WHERE user_id = :user_id AND device_id = :device_id
+                        )
+                    """), {
+                        'user_id': user_id,
+                        'device_id': device_id
+                    }).scalar()
+                    
+                    if not exists:
+                        device_conn.execute(text("""
+                            INSERT INTO user_devices (id, user_id, device_id, is_primary, created_at)
+                            VALUES (gen_random_uuid(), :user_id, :device_id, true, NOW())
+                        """), {
+                            'user_id': user_id,
+                            'device_id': device_id
+                        })
+                        print(f"创建用户设备关联记录")
+                    else:
+                        print(f"用户设备关联记录已存在")
+                except Exception as e:
+                    print(f"创建用户设备关联记录失败: {e}")
+    except Exception as e:
+        print(f"创建设备记录失败: {e}")
+    
+    # 3. 创建滑雪会话记录（如果表存在）
+    try:
+        with engine.begin() as session_conn:
+            # 检查skiing_sessions表是否存在
+            session_table_exists = session_conn.execute(text("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE  table_schema = 'public'
+                    AND    table_name   = 'skiing_sessions'
+                )
+            """)).scalar()
+            
+            if session_table_exists:
+                # 检查会话记录是否已存在
+                session_exists = session_conn.execute(text("""
+                    SELECT EXISTS (SELECT 1 FROM skiing_sessions WHERE id = :id)
+                """), {'id': session_id}).scalar()
+                
+                if not session_exists:
+                    # 插入会话记录 - 需要session_name字段（NOT NULL）
+                    session_conn.execute(text("""
+                        INSERT INTO skiing_sessions (id, created_at, updated_at, user_id, device_id, session_name, session_status, start_time, end_time)
+                        VALUES (:id, NOW(), NOW(), :user_id, :device_id, :session_name, 'active', NOW(), NOW())
+                    """), {
+                        'id': session_id,
+                        'user_id': user_id,
+                        'device_id': device_id,
+                        'session_name': f'气压计导入会话_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                    })
+                    print(f"创建会话记录: {session_id}")
+                else:
+                    print(f"会话记录已存在，直接使用: {session_id}")
+    except Exception as e:
+        print(f"创建会话记录失败: {e}")
+    
+    return user_id, device_id
 
 def check_table_structure():
     """检查barometer_data表结构并返回列信息"""
@@ -152,7 +296,7 @@ def import_barometer_data():
         return
     
     # 从指定CSV文件读取数据
-    csv_file_path = r"C:/Users/CJ/Documents/trae_projects/AISkiCoach/backend/app/algorithm/dataset/jason/baro/2025-10-30_10-34-08/Barometer.csv"
+    csv_file_path = r"../dataset/jason/baro/2025-10-30_10-34-08/Barometer.csv"
     print(f"正在从CSV文件读取数据: {csv_file_path}")
     
     barometer_df = read_barometer_csv(csv_file_path)
@@ -172,6 +316,9 @@ def import_barometer_data():
     # 批量导入数据
     try:
         with engine.begin() as conn:
+            # 确保必要的外键记录存在
+            ensure_required_records(conn, TEST_SESSION_ID, TEST_DEVICE_ID, TEST_USER_ID)
+            
             # 创建临时表
             create_temp_table(conn)
             

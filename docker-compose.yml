@@ -23,6 +23,22 @@ services:
       postgres
       -c shared_preload_libraries=timescaledb
       -c timescaledb.telemetry_level=off
+      -c max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
+      -c shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
+      -c effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1GB}
+      -c maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=${POSTGRES_WAL_BUFFERS:-16MB}
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=${POSTGRES_WORK_MEM:-10MB}
+      -c min_wal_size=${POSTGRES_MIN_WAL_SIZE:-1GB}
+      -c max_wal_size=${POSTGRES_MAX_WAL_SIZE:-4GB}
+      -c max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-8}
+      -c max_parallel_workers_per_gather=${POSTGRES_MAX_PARALLEL_WORKERS_PER_GATHER:-4}
+      -c max_parallel_workers=${POSTGRES_MAX_PARALLEL_WORKERS:-8}
+      -c max_parallel_maintenance_workers=4
 
   redis:
     image: redis:7-alpine

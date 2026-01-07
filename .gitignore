@@ -1,6 +1,63 @@
+# IDEs and Editors
 .vscode
+.idea/
+*.swp
+*.swo
+*~
+
+# Node.js
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
 /test-results/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+.pytest_cache/
+htmlcov/
+.coverage
+*.cover
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Environment Variables (SECURITY CRITICAL)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+audit.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Temporary files
+*.tmp
+*.bak
+*.backup

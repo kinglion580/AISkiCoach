@@ -37,7 +37,7 @@ ENV PYTHONPATH=/app
 
 COPY ./scripts /app/scripts
 
-COPY ./pyproject.toml ./uv.lock ./alembic.ini /app/
+COPY ./pyproject.toml ./uv.lock ./alembic.ini ./gunicorn_conf.py /app/
 
 COPY ./app /app/app
 
@@ -49,4 +49,5 @@ COPY ./static /app/static
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync
 
-CMD ["fastapi", "run", "--workers", "4", "app/main.py"]
+# 使用优化的 Gunicorn 配置
+CMD ["gunicorn", "app.main:app", "-c", "gunicorn_conf.py"]

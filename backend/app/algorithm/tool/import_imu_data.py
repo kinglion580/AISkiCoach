@@ -19,16 +19,21 @@ if DATABASE_URL:
     engine = create_engine(DATABASE_URL)
 else:
     DB_USER = os.getenv('DB_USER', 'postgres')
-    DB_PASSWORD = os.getenv('DB_PASSWORD', 'changethis')
+    DB_PASSWORD = os.getenv('DB_PASSWORD')
+    if not DB_PASSWORD:
+        raise ValueError(
+            "DB_PASSWORD environment variable is required. "
+            "Set it in your environment or use DATABASE_URL instead."
+        )
     DB_HOST = os.getenv('DB_HOST', 'localhost')
     DB_PORT = os.getenv('DB_PORT', '5432')
     DB_NAME = os.getenv('DB_NAME', 'app')
     engine = create_engine(f'postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}')
 
 # 固定的用户、设备、会话ID
-FIXED_USER_ID = "10000000-0000-0000-0000-000000000001"
-FIXED_DEVICE_ID = "10000000-0000-0000-0000-000000000002"  
-FIXED_SESSION_ID = "10000000-0000-0000-0000-000000000003"
+FIXED_USER_ID = "47db736f-b22f-4998-9045-735c7579aaae"
+FIXED_DEVICE_ID = "712ceb39-eb4a-44c0-b877-d0e6ac1c8099"  
+FIXED_SESSION_ID = "82ed5810-409e-4a90-b7d0-537e18d80e34"
 
 def get_source_id(device_name):
     """根据设备名称映射source_id
@@ -88,18 +93,24 @@ def ensure_required_records(conn, session_id=None, device_id=None, user_id=None)
             """)).scalar()
             
             if user_table_exists:
-                # 插入用户记录
-                user_conn.execute(text("""
-                    INSERT INTO users (id, created_at, updated_at, email, password_hash, name, is_active)
-                    VALUES (:id, NOW(), NOW(), :email, :password_hash, :name, true)
-                    ON CONFLICT (id) DO NOTHING
-                """), {
-                    'id': user_id,
-                    'email': f'temp_user_{datetime.now().strftime("%Y%m%d%H%M%S")}@example.com',
-                    'password_hash': 'temp_password_hash',
-                    'name': '临时导入用户'
-                })
-                print(f"创建或使用用户记录: {user_id}")
+                # 检查用户记录是否已存在
+                user_exists = user_conn.execute(text("""
+                    SELECT EXISTS (SELECT 1 FROM users WHERE id = :id)
+                """), {'id': user_id}).scalar()
+                
+                if not user_exists:
+                    # 插入用户记录 - 使用phone字段，没有email和password_hash
+                    user_conn.execute(text("""
+                        INSERT INTO users (id, created_at, updated_at, phone, nickname, is_active, level)
+                        VALUES (:id, NOW(), NOW(), :phone, :nickname, true, 'Dexter')
+                    """), {
+                        'id': user_id,
+                        'phone': f'1380000{datetime.now().strftime("%H%M%S")}',
+                        'nickname': '临时导入用户'
+                    })
+                    print(f"创建用户记录: {user_id}")
+                else:
+                    print(f"用户记录已存在，直接使用: {user_id}")
     except Exception as e:
         print(f"创建用户记录失败: {e}")
     
@@ -116,18 +127,52 @@ def ensure_required_records(conn, session_id=None, device_id=None, user_id=None)
             """)).scalar()
             
             if device_table_exists:
-                # 插入设备记录
-                device_conn.execute(text("""
-                    INSERT INTO devices (id, created_at, updated_at, name, device_type, user_id)
-                    VALUES (:id, NOW(), NOW(), :name, :device_type, :user_id)
-                    ON CONFLICT (id) DO NOTHING
-                """), {
-                    'id': device_id,
-                    'name': 'IMU导入设备',
-                    'device_type': 'imu',
-                    'user_id': user_id
-                })
-                print(f"创建或使用设备记录: {device_id}")
+                # 检查设备记录是否已存在
+                device_exists = device_conn.execute(text("""
+                    SELECT EXISTS (SELECT 1 FROM devices WHERE id = :id)
+                """), {'id': device_id}).scalar()
+                
+                if not device_exists:
+                    # 插入设备记录 - 使用device_name和device_id字段，没有user_id（通过user_devices表关联）
+                    device_conn.execute(text("""
+                        INSERT INTO devices (id, created_at, updated_at, device_id, device_name, device_type, connection_status)
+                        VALUES (:id, NOW(), NOW(), :device_id, :device_name, :device_type, 'connected')
+                    """), {
+                        'id': device_id,
+                        'device_id': f'IMU-{str(device_id)[:8].upper()}',
+                        'device_name': 'IMU导入设备',
+                        'device_type': 'HeyGo A1'
+                    })
+                    print(f"创建设备记录: {device_id}")
+                else:
+                    print(f"设备记录已存在，直接使用: {device_id}")
+                
+                # 创建用户设备关联记录
+                try:
+                    # 检查是否已存在关联
+                    exists = device_conn.execute(text("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM user_devices 
+                            WHERE user_id = :user_id AND device_id = :device_id
+                        )
+                    """), {
+                        'user_id': user_id,
+                        'device_id': device_id
+                    }).scalar()
+                    
+                    if not exists:
+                        device_conn.execute(text("""
+                            INSERT INTO user_devices (id, user_id, device_id, is_primary, created_at)
+                            VALUES (gen_random_uuid(), :user_id, :device_id, true, NOW())
+                        """), {
+                            'user_id': user_id,
+                            'device_id': device_id
+                        })
+                        print(f"创建用户设备关联记录")
+                    else:
+                        print(f"用户设备关联记录已存在")
+                except Exception as e:
+                    print(f"创建用户设备关联记录失败: {e}")
     except Exception as e:
         print(f"创建设备记录失败: {e}")
     
@@ -144,16 +189,25 @@ def ensure_required_records(conn, session_id=None, device_id=None, user_id=None)
             """)).scalar()
             
             if session_table_exists:
-                # 插入会话记录
-                session_conn.execute(text("""
-                    INSERT INTO skiing_sessions (id, created_at, updated_at, user_id, start_time, end_time)
-                    VALUES (:id, NOW(), NOW(), :user_id, NOW(), NOW())
-                    ON CONFLICT (id) DO NOTHING
-                """), {
-                    'id': session_id,
-                    'user_id': user_id
-                })
-                print(f"创建或使用会话记录: {session_id}")
+                # 检查会话记录是否已存在
+                session_exists = session_conn.execute(text("""
+                    SELECT EXISTS (SELECT 1 FROM skiing_sessions WHERE id = :id)
+                """), {'id': session_id}).scalar()
+                
+                if not session_exists:
+                    # 插入会话记录 - 需要session_name字段（NOT NULL）
+                    session_conn.execute(text("""
+                        INSERT INTO skiing_sessions (id, created_at, updated_at, user_id, device_id, session_name, session_status, start_time, end_time)
+                        VALUES (:id, NOW(), NOW(), :user_id, :device_id, :session_name, 'active', NOW(), NOW())
+                    """), {
+                        'id': session_id,
+                        'user_id': user_id,
+                        'device_id': device_id,
+                        'session_name': f'IMU导入会话_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                    })
+                    print(f"创建会话记录: {session_id}")
+                else:
+                    print(f"会话记录已存在，直接使用: {session_id}")
     except Exception as e:
         print(f"创建会话记录失败: {e}")
     
@@ -556,7 +610,7 @@ def main():
         csv_file_path = sys.argv[1]
     else:
         # 默认CSV文件路径 - 使用原始字符串处理包含特殊字符的路径
-        base_path = r"C:\Users\CJ\Documents\trae_projects\AISkiCoach\backend\app\algorithm\dataset\jason\imu"
+        base_path = "../dataset/jason/imu"
         default_filename = "20251030183355--雪兔道滑了两段，中间上魔毯的时候也全程开着传感器。第一段是大角度的立刃转弯，中间摔了一次，第一趟的最后有10个滚刃。第二趟大湾的大角度刻滑，没摔，最后滚刃.txt"
         csv_file_path = os.path.join(base_path, default_filename)
         print(f"未指定CSV文件路径，使用默认路径: {csv_file_path}")

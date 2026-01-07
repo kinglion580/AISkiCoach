@@ -1,264 +1,211 @@
 """
 验证码登录和认证相关API
+Refactored to use AuthService and audit logging
 """
 
-from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status, Depends
-from sqlmodel import Session, select
+from fastapi import APIRouter, HTTPException, Request, status
 
 from app.api.deps import SessionDep
+from app.core.audit import audit_service
 from app.core.config import settings
-from app.core.security import create_access_token
-from app.models import (
-    SendCodeRequest, 
-    SendCodeResponse, 
-    VerificationCodeLoginRequest, 
-    LoginResponse,
-    VerificationCodeInfo,
-    User,
-    UserCreate
+from app.core.exceptions import (
+    AuthenticationError,
+    RateLimitError,
+    VerificationCodeError,
 )
-from app.core.verification_code import verification_code_service, sms_service
+from app.domains.auth import AuthService
+from app.domains.auth.schemas import (
+    LoginResponse,
+    SendCodeRequest,
+    SendCodeResponse,
+    VerificationCodeInfo,
+    VerificationCodeLoginRequest,
+)
 
 router = APIRouter(prefix="", tags=["auth"])
 
 
+def get_client_ip(request: Request) -> str:
+    """Extract client IP address from request"""
+    client_ip = request.client.host if request.client else "unknown"
+    # Check for reverse proxy headers
+    forwarded_for = request.headers.get("X-Forwarded-For")
+    if forwarded_for:
+        client_ip = forwarded_for.split(",")[0].strip()
+    elif request.headers.get("X-Real-IP"):
+        client_ip = request.headers.get("X-Real-IP")
+    return client_ip
+
+
+def get_device_info(request: Request) -> dict:
+    """Extract device information from request headers"""
+    user_agent = request.headers.get("User-Agent", "")
+
+    # Try to parse device info from custom headers (if client sends them)
+    return {
+        "device_type": request.headers.get("X-Device-Type"),
+        "device_model": request.headers.get("X-Device-Model"),
+        "os_type": request.headers.get("X-OS-Type"),
+        "os_version": request.headers.get("X-OS-Version"),
+        "app_version": request.headers.get("X-App-Version"),
+        "user_agent": user_agent
+    }
+
+
 @router.post("/auth/send-code", response_model=SendCodeResponse)
-def send_verification_code(
-    request: SendCodeRequest,
+async def send_verification_code(
+    payload: SendCodeRequest,
+    request: Request,
     session: SessionDep
 ) -> Any:
     """
     发送验证码
-    
+
     - **phone**: 手机号（11位中国手机号）
+
+    频率限制：
+    - 每个手机号: 5次/分钟
+    - 每个IP地址: 10次/分钟
     """
-    
-    phone = request.phone
-    
-    # 验证手机号格式
-    if not verification_code_service.validate_phone(phone):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="手机号格式不正确"
+    phone = payload.phone
+    client_ip = get_client_ip(request)
+
+    # Initialize auth service
+    auth_service = AuthService(db_session=session)
+
+    try:
+        # Send verification code through service
+        response = await auth_service.send_verification_code(
+            phone=phone,
+            ip_address=client_ip
         )
-    
-    # 检查发送频率限制
-    if not verification_code_service.check_rate_limit(phone):
+
+        # Log audit event
+        audit_service.log_code_sent(phone=phone, ip_address=client_ip)
+
+        return response
+
+    except RateLimitError as e:
+        # Log rate limit exceeded
+        audit_service.log_rate_limit_exceeded(
+            resource="send_verification_code",
+            identifier=phone,
+            ip_address=client_ip
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"发送过于频繁，请{settings.VERIFICATION_CODE_RATE_LIMIT_MINUTES}分钟后再试"
+            detail=e.user_message,
+            headers={"Retry-After": str(e.retry_after)} if e.retry_after else {}
         )
-    
-    # 生成验证码
-    code = verification_code_service.generate_code()
-    
-    # 开发环境使用固定验证码
-    if settings.ENVIRONMENT == "local":
-        code = "123456"
-    
-    # 存储验证码
-    if not verification_code_service.store_code(phone, code):
+
+    except VerificationCodeError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="验证码存储失败"
+            detail=e.user_message
         )
-    
-    # 发送短信
-    if not sms_service.send_verification_code(phone, code):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="验证码发送失败"
-        )
-    
-    return SendCodeResponse(
-        success=True,
-        message="验证码发送成功",
-        expires_in=settings.VERIFICATION_CODE_EXPIRE_MINUTES * 60
-    )
 
 
 @router.post("/auth/login", response_model=LoginResponse)
-def login_with_verification_code(
-    request: VerificationCodeLoginRequest,
+async def login_with_verification_code(
+    login_request: VerificationCodeLoginRequest,
+    request: Request,
     session: SessionDep
 ) -> Any:
     """
     验证码登录
-    
+
     - **phone**: 手机号
     - **verification_code**: 验证码
+
+    Returns JWT token with session_id for session management
     """
-    
-    phone = request.phone
-    verification_code = request.verification_code
-    
-    # 验证验证码
-    if not verification_code_service.verify_code(phone, verification_code):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="验证码错误或已过期"
-        )
-    
-    # 查找用户
-    user = session.exec(select(User).where(User.phone == phone)).first()
-    
-    if not user:
-        # 创建新用户
-        user = User(
+    phone = login_request.phone
+    code = login_request.code
+    client_ip = get_client_ip(request)
+    device_info = get_device_info(request)
+
+    # Initialize auth service
+    auth_service = AuthService(db_session=session)
+
+    try:
+        # Verify code and login through service
+        response = await auth_service.verify_and_login(
             phone=phone,
-            nickname=f"用户{phone[-4:]}"  # 使用手机号后4位作为默认昵称
+            code=code,
+            ip_address=client_ip,
+            **device_info
         )
-        session.add(user)
-        session.commit()
-        session.refresh(user)
-    
-    # 检查用户是否激活
-    if not user.is_active:
+
+        # Log successful login
+        audit_service.log_login_success(
+            user_id=str(response.user.id),
+            phone=phone,
+            ip_address=client_ip
+        )
+
+        # Log code verified
+        audit_service.log_code_verified(
+            phone=phone,
+            user_id=str(response.user.id),
+            ip_address=client_ip
+        )
+
+        return response
+
+    except AuthenticationError as e:
+        # Log failed login
+        audit_service.log_login_failed(
+            phone=phone,
+            ip_address=client_ip,
+            reason=e.internal_message
+        )
+
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="用户账户已被禁用"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.user_message
         )
-    
-    # 生成访问令牌
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        subject=str(user.id), expires_delta=access_token_expires
-    )
-    
-    return LoginResponse(
-        access_token=access_token,
-        token_type="bearer",
-        expires_in=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-        user=user
-    )
 
 
 # 开发环境专用接口
 if settings.ENVIRONMENT == "local":
-    
-    @router.post("/dev/test-verify-code")
-    def test_verify_code(
-        request: VerificationCodeLoginRequest
-    ) -> Any:
-        """
-        测试验证码验证（仅开发环境）
-        """
-        phone = request.phone
-        verification_code = request.verification_code
-        
-        # 验证验证码
-        result = verification_code_service.verify_code(phone, verification_code)
-        
-        return {
-            "phone": phone,
-            "verification_code": verification_code,
-            "verify_result": result
-        }
-    
-    @router.post("/dev/test-create-user")
-    def test_create_user(
-        request: SendCodeRequest,
+
+    @router.get("/dev/verification-codes/{phone}", response_model=VerificationCodeInfo)
+    async def get_verification_code(
+        phone: str,
         session: SessionDep
     ) -> Any:
         """
-        测试用户创建（仅开发环境）
-        """
-        phone = request.phone
-        
-        try:
-            # 查找用户
-            user = session.exec(select(User).where(User.phone == phone)).first()
-            
-            if not user:
-                # 创建新用户
-                user = User(
-                    phone=phone,
-                    nickname=f"用户{phone[-4:]}"  # 使用手机号后4位作为默认昵称
-                )
-                session.add(user)
-                session.commit()
-                session.refresh(user)
-            
-            return {
-                "phone": phone,
-                "user_id": str(user.id),
-                "nickname": user.nickname,
-                "is_active": user.is_active
-            }
-        except Exception as e:
-            return {
-                "error": str(e),
-                "phone": phone
-            }
-    
-    @router.get("/dev/verification-codes/{phone}", response_model=VerificationCodeInfo)
-    def get_verification_code(
-        phone: str
-    ) -> Any:
-        """
         获取指定手机号的当前验证码（仅开发环境）
-        
+
         - **phone**: 手机号
+
+        **安全提示**: 此端点仅供开发/测试使用，生产环境禁用
         """
-        if not verification_code_service.validate_phone(phone):
+        # SECURITY: Only allow in development environment
+        if settings.ENVIRONMENT == "production":
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="手机号格式不正确"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Not found"
             )
-        
-        code_info = verification_code_service.get_stored_code(phone)
+
+        # Initialize auth service
+        auth_service = AuthService(db_session=session)
+
+        # Get code info through service
+        code_info = await auth_service.get_verification_code_info(phone)
+
         if not code_info:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="未找到该手机号的验证码"
             )
-        
-        # 计算过期时间
-        created_at = datetime.fromisoformat(code_info["created_at"])
-        expires_at = created_at + timedelta(seconds=settings.VERIFICATION_CODE_EXPIRE_MINUTES * 60)
-        
+
         return VerificationCodeInfo(
             phone=phone,
             code=code_info["code"],
             created_at=code_info["created_at"],
-            expires_at=expires_at.isoformat(),
-            attempts=code_info["attempts"]
-        )
-    
-    @router.post("/dev/send-test-code", response_model=SendCodeResponse)
-    def send_test_code(
-        request: SendCodeRequest,
-        session: SessionDep
-    ) -> Any:
-        """
-        发送测试验证码（仅开发环境）
-        
-        - **phone**: 手机号
-        """
-        phone = request.phone
-        
-        # 验证手机号格式
-        if not verification_code_service.validate_phone(phone):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="手机号格式不正确"
-            )
-        
-        # 使用固定测试验证码
-        test_code = "123456"
-        
-        # 存储验证码
-        if not verification_code_service.store_code(phone, test_code):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="验证码存储失败"
-            )
-        
-        return SendCodeResponse(
-            success=True,
-            message=f"测试验证码已发送到 {phone}: {test_code}",
-            expires_in=settings.VERIFICATION_CODE_EXPIRE_MINUTES * 60
+            expires_at=code_info["expires_at"],
+            attempts=int(code_info.get("attempts", 0))
         )

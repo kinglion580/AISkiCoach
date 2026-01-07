@@ -10,9 +10,14 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
 import redis
-from fastapi import HTTPException, status
 
 from app.core.config import settings
+from app.core.exceptions import (
+    RedisError,
+    VerificationCodeError,
+    SMSServiceError,
+    ErrorCode
+)
 
 
 class VerificationCodeService:
@@ -34,16 +39,17 @@ class VerificationCodeService:
             redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
             # 测试连接
             redis_client.ping()
-            print("✅ Redis连接成功")
+            print("[VerificationCode] Redis连接成功")
             return redis_client
         except Exception as e:
             # 开发环境如果Redis连接失败，使用内存Mock
             if settings.ENVIRONMENT == "local":
-                print(f"⚠️  Redis连接失败，使用MockRedis: {str(e)}")
+                print(f"[VerificationCode] Redis连接失败，使用MockRedis")
                 return MockRedis()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Redis连接失败: {str(e)}"
+            # 生产环境抛出异常（不暴露连接字符串等敏感信息）
+            raise RedisError(
+                user_message="服务暂时不可用，请稍后重试",
+                internal_message=f"Redis连接失败: {type(e).__name__}: {str(e)}"
             )
     
     def validate_phone(self, phone: str) -> bool:
@@ -79,9 +85,11 @@ class VerificationCodeService:
         try:
             return self.redis_client.setex(key, self.expire_seconds, json.dumps(data))
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"验证码存储失败: {str(e)}"
+            # 不暴露 Redis 错误详情给用户
+            raise VerificationCodeError(
+                user_message="验证码存储失败，请稍后重试",
+                error_code=ErrorCode.VERIFICATION_CODE_STORAGE_FAILED,
+                internal_message=f"Redis存储失败 (phone={phone}): {type(e).__name__}: {str(e)}"
             )
     
     def verify_code(self, phone: str, input_code: str) -> bool:
@@ -102,9 +110,11 @@ class VerificationCodeService:
             self.redis_client.setex(key, self.expire_seconds, json.dumps(data))
             return False
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"验证码验证失败: {str(e)}"
+            # 不暴露 Redis 错误详情给用户
+            raise VerificationCodeError(
+                user_message="验证码验证失败，请稍后重试",
+                error_code=ErrorCode.VERIFICATION_CODE_INVALID,
+                internal_message=f"Redis验证失败 (phone={phone}): {type(e).__name__}: {str(e)}"
             )
     
     def get_stored_code(self, phone: str) -> Optional[Dict[str, Any]]:
@@ -179,26 +189,26 @@ class SMSService:
         elif self.service_type == "tencent":
             return self._tencent_send(phone, code)
         else:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"不支持的短信服务类型: {self.service_type}"
+            raise SMSServiceError(
+                user_message="短信服务配置错误",
+                internal_message=f"不支持的短信服务类型: {self.service_type}"
             )
-    
+
     def _mock_send(self, phone: str, code: str) -> bool:
-        print(f"📱 [Mock SMS] 验证码发送到 {phone}: {code}")
-        print(f"⏰ 验证码有效期: {settings.VERIFICATION_CODE_EXPIRE_MINUTES} 分钟")
+        print(f"[Mock SMS] 验证码发送到 {phone}: {code}")
+        print(f"[Mock SMS] 验证码有效期: {settings.VERIFICATION_CODE_EXPIRE_MINUTES} 分钟")
         return True
-    
+
     def _aliyun_send(self, phone: str, code: str) -> bool:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="阿里云短信服务暂未实现"
+        raise SMSServiceError(
+            user_message="短信服务暂时不可用，请稍后重试",
+            internal_message="阿里云短信服务暂未实现"
         )
-    
+
     def _tencent_send(self, phone: str, code: str) -> bool:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="腾讯云短信服务暂未实现"
+        raise SMSServiceError(
+            user_message="短信服务暂时不可用，请稍后重试",
+            internal_message="腾讯云短信服务暂未实现"
         )
 
 

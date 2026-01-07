@@ -189,9 +189,15 @@ def upgrade():
     op.create_index(op.f('ix_skiing_metrics_device_id'), 'skiing_metrics', ['device_id'], unique=False)
     op.create_index(op.f('ix_skiing_metrics_session_id'), 'skiing_metrics', ['session_id'], unique=False)
     op.create_index(op.f('ix_skiing_metrics_user_id'), 'skiing_metrics', ['user_id'], unique=False)
-    op.drop_index('ix_user_email', table_name='user')
-    op.drop_table('user')
+    
+    # First drop the foreign key constraint from item table
     op.drop_constraint('item_owner_id_fkey', 'item', type_='foreignkey')
+    
+    # Drop index if it exists (using IF EXISTS)
+    op.execute("DROP INDEX IF EXISTS ix_user_email")
+    op.drop_table('user')
+    
+    # Create new foreign key constraint pointing to users table
     op.create_foreign_key(None, 'item', 'users', ['owner_id'], ['id'], ondelete='CASCADE')
     # ### end Alembic commands ###
 

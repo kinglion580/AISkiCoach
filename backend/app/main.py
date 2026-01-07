@@ -1,12 +1,20 @@
 import sentry_sdk
 from fastapi import FastAPI
+from fastapi.openapi.docs import (
+    get_swagger_ui_html,
+    get_swagger_ui_oauth2_redirect_html,
+)
 from fastapi.routing import APIRoute
-from fastapi.openapi.docs import get_swagger_ui_html, get_swagger_ui_oauth2_redirect_html
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
 from app.api.main import api_router
 from app.core.config import settings
+from app.middleware.error_handler import setup_exception_handlers
+from app.middleware.security import (
+    RequestSizeLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 
 
 def custom_generate_unique_id(route: APIRoute) -> str:
@@ -27,7 +35,15 @@ app = FastAPI(
     docs_url=None,  # 禁用默认的 /docs 路由
     redoc_url=None,  # 禁用默认的 /redoc 路由
 )
+
+# Setup global exception handlers
+setup_exception_handlers(app)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Security middleware (order matters - add before CORS)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware, max_size=10 * 1024 * 1024)  # 10MB limit
 
 # Set all CORS enabled origins
 if settings.all_cors_origins:
